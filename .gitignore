@@ -1,0 +1,7 @@
+/.cargo
+/files
+/live_site
+/result
+/secrets
+/target
+/*.json
