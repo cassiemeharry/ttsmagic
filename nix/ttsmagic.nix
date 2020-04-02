@@ -8,14 +8,9 @@ let
     rustc = rust;
     cargo = rust;
   };
-  filterFunc = path: type:
-    type != "directory"
-      || (
-        builtins.baseNameOf path != "files"
-        && builtins.baseNameOf path != "live_site"
-        && builtins.baseNameOf path != "target"
-      );
-  src = builtins.filterSource filterFunc ../.;
+  srcFilter = path: _type:
+    (builtins.match "\.nix$" path) == null;
+  src = pkgs.nix-gitignore.gitignoreFilterSource srcFilter [] ../.;
 in naersk.buildPackage {
   inherit src;
   remapPathPrefix = true;
