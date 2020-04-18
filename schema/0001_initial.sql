@@ -3,9 +3,9 @@ CREATE TABLE scryfall_card
 , updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE UNIQUE INDEX scryfall_card_id ON scryfall_card ((json ->> 'id'));
+CREATE UNIQUE INDEX scryfall_card_id ON scryfall_card (((json ->> 'id')::uuid));
 
-CREATE INDEX scryfall_card_oracle_id ON scryfall_card ((json ->> 'oracle_id'));
+CREATE INDEX scryfall_card_oracle_id ON scryfall_card (((json ->> 'oracle_id')::uuid));
 
 CREATE INDEX scryfall_card_name ON scryfall_card USING GIN ((string_to_array(json ->> 'name', ' // ')));
 
@@ -14,8 +14,8 @@ CREATE TABLE scryfall_set
 , updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE UNIQUE INDEX scryfall_set_id ON scryfall_set ((json ->> 'id'));
+CREATE UNIQUE INDEX scryfall_set_id ON scryfall_set (((json ->> 'id')::uuid));
 
-CREATE UNIQUE INDEX scryfall_set_code ON scryfall_set ((json ->> 'code'));
+CREATE UNIQUE INDEX scryfall_set_code ON scryfall_set (((json ->> 'code')::text));
 
-CREATE INDEX scryfall_set_name ON scryfall_set ((json ->> 'name'));
+CREATE INDEX scryfall_set_name ON scryfall_set (((json ->> 'name')::text));

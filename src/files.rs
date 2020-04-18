@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Context as _, Result};
 use async_std::{
     fs, io,
     path::{Path, PathBuf},
@@ -5,30 +6,29 @@ use async_std::{
     prelude::*,
     task::{block_on, Context, Poll},
 };
-use failure::{format_err, Error, ResultExt};
 use rust_embed::RustEmbed;
 use tempfile::TempDir;
 use url::Url;
 
 const FILES_FOLDER_RELATIVE: &'static str = "files";
 const FILES_URL_BASE: &'static str = "https://ttsmagic.cards/files/";
-const STATIC_URL_BASE: &'static str = "https://ttsmagic.cards/static/";
+// const STATIC_URL_BASE: &'static str = "https://ttsmagic.cards/static/";
 
 #[derive(RustEmbed)]
-#[folder = "$CARGO_MANIFEST_DIR/static/"]
+#[folder = "static/"]
 pub struct StaticFiles;
 
-impl StaticFiles {
-    pub fn get_url(name: &'static str) -> Result<Url, Error> {
-        match Self::get(name) {
-            None => Err(format_err!("Invalid static file reference: {}", name)),
-            Some(_) => {
-                let base = Url::parse(STATIC_URL_BASE).unwrap();
-                Ok(base.join(name)?)
-            }
-        }
-    }
-}
+// impl StaticFiles {
+//     pub fn get_url(name: &'static str) -> Result<Url> {
+//         match Self::get(name) {
+//             None => Err(anyhow!("Invalid static file reference: {}", name)),
+//             Some(_) => {
+//                 let base = Url::parse(STATIC_URL_BASE).unwrap();
+//                 Ok(base.join(name)?)
+//             }
+//         }
+//     }
+// }
 
 #[derive(Debug)]
 pub struct MediaFile {
@@ -48,10 +48,7 @@ impl Clone for MediaFile {
 }
 
 impl MediaFile {
-    pub fn create<P: AsRef<Path>, R: AsRef<Path>>(
-        root: R,
-        name: P,
-    ) -> Result<WritableMediaFile, Error> {
+    pub fn create<P: AsRef<Path>, R: AsRef<Path>>(root: R, name: P) -> Result<WritableMediaFile> {
         let root = root.as_ref().join(FILES_FOLDER_RELATIVE);
         WritableMediaFile::new(root, name)
     }
@@ -72,7 +69,7 @@ impl MediaFile {
         }
     }
 
-    // pub async fn get<P: AsRef<Path>, R: AsRef<Path>>(root: R, name: P) -> Result<Self, Error> {
+    // pub async fn get<P: AsRef<Path>, R: AsRef<Path>>(root: R, name: P) -> Result<Self> {
     //     let rel_path = name.as_ref().to_owned();
     //     let root = root.as_ref().join(FILES_FOLDER_RELATIVE);
     //     // let file = Some(fs::File::open(full_filename).await?);
@@ -83,7 +80,7 @@ impl MediaFile {
     //     })
     // }
 
-    // pub async fn open(&self) -> Result<fs::File, Error> {
+    // pub async fn open(&self) -> Result<fs::File> {
     //     let full_filename = self.root.join(&self.rel_path);
     //     Ok(fs::File::open(full_filename).await?)
     // }
@@ -92,10 +89,10 @@ impl MediaFile {
         self.root.join(&self.rel_path)
     }
 
-    pub fn url(&self) -> Result<Url, Error> {
+    pub fn url(&self) -> Result<Url> {
         let base = Url::parse(FILES_URL_BASE).unwrap();
         let path = self.rel_path.to_str().ok_or_else(|| {
-            format_err!(
+            anyhow!(
                 "MediaFile with rel path {:?} cannot be converted into a string safely",
                 self.rel_path.to_string_lossy()
             )
@@ -113,12 +110,47 @@ pub struct WritableMediaFile {
     temp_file: Option<fs::File>,
 }
 
+// fn check_tmp() -> Result<()> {
+//     use std::os::unix::fs::PermissionsExt;
+
+//     let tmp_root = std::path::Path::new("/tmp");
+
+//     debug!("Checking tmp directory");
+//     let metadata = match std::fs::metadata(&tmp_root) {
+//         Ok(m) => m,
+//         Err(e) => {
+//             warn!("Got error checking metadata on /tmp: {}", e);
+//             std::fs::create_dir(&tmp_root)?;
+//             debug!("Created /tmp directory");
+//             std::fs::metadata(&tmp_root)?
+//         }
+//     };
+//     let perms = metadata.permissions();
+//     debug!("Got perms for /tmp: {:?}", perms);
+//     if (perms.mode() & 0o7777) != 0o1777 {
+//         warn!(
+//             "/tmp mode is incorrect. Expected 1777, got {:04o}",
+//             perms.mode()
+//         );
+//         std::fs::set_permissions(&tmp_root, std::fs::Permissions::from_mode(0o1777))?;
+//     }
+
+//     debug!("/tmp directory permissions are ok now");
+
+//     Ok(())
+// }
+
 impl WritableMediaFile {
-    fn new<N: AsRef<Path>>(root: PathBuf, name: N) -> Result<Self, Error> {
+    fn new<N: AsRef<Path>>(root: PathBuf, name: N) -> Result<Self> {
+        // if let Err(e) = check_tmp() {
+        //     error!("Got error checking /tmp directory: {}", e);
+        //     Err(e)?
+        // }
+
         let rel_filename = name.as_ref().to_owned();
         if let None = rel_filename.file_name() {
             // This invariant is used in `Self::path`.
-            return Err(format_err!(
+            return Err(anyhow!(
                 "Media file name {} is invalid (no file name component)",
                 rel_filename.to_string_lossy()
             ));
@@ -157,11 +189,11 @@ impl WritableMediaFile {
         self.temp_dir.path().join(basename).into()
     }
 
-    async fn finish_tempfile(mut self) -> Result<(PathBuf, PathBuf), Error> {
+    async fn finish_tempfile(mut self) -> Result<(PathBuf, PathBuf)> {
         let dest_path = self.root.join(&self.rel_filename);
         let temp_file_path = self.path();
         if !temp_file_path.is_file().await {
-            return Err(format_err!("Media file"));
+            return Err(anyhow!("Media file"));
         }
         if let Some(f) = self.temp_file.as_mut() {
             f.flush().await.context("Finalizing media file")?;
@@ -169,7 +201,7 @@ impl WritableMediaFile {
         let directory = dest_path
             .parent()
             .ok_or_else(|| {
-                format_err!(
+                anyhow!(
                     "Media file {} has no parent directory",
                     self.rel_filename.to_string_lossy()
                 )
@@ -190,7 +222,7 @@ impl WritableMediaFile {
             let rel_filename_dir: PathBuf = rel_filename
                 .parent()
                 .ok_or_else(|| {
-                    format_err!(
+                    anyhow!(
                         "Media file {} has no parent directory",
                         rel_filename.to_string_lossy()
                     )
@@ -199,7 +231,7 @@ impl WritableMediaFile {
             let basename_no_ext: String = final_path
                 .file_stem()
                 .ok_or_else(|| {
-                    format_err!("Filename {} has no basename", final_path.to_string_lossy())
+                    anyhow!("Filename {} has no basename", final_path.to_string_lossy())
                 })?
                 .to_string_lossy()
                 .into_owned();
@@ -253,12 +285,12 @@ impl WritableMediaFile {
         Ok((final_path, rel_filename))
     }
 
-    pub async fn close(self) -> Result<(), Error> {
+    pub async fn close(self) -> Result<()> {
         let (_full_filename, _rel) = self.finish_tempfile().await?;
         Ok(())
     }
 
-    pub async fn finalize(self) -> Result<MediaFile, Error> {
+    pub async fn finalize(self) -> Result<MediaFile> {
         let root = self.root.clone();
         let (_full_filename, rel_path) = self.finish_tempfile().await?;
         Ok(MediaFile { root, rel_path })

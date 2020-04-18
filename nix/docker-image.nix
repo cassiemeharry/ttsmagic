@@ -7,12 +7,14 @@ let
 in pkgs.dockerTools.buildLayeredImage {
   name = "cassiemeharry/ttsmagic";
   tag = "latest";
-  contents = [ app pkgs.dumb-init pkgs.busybox ];
+  contents = [ app pkgs.dumb-init pkgs.cacert pkgs.busybox ];
+
+  extraCommands = "mkdir -m 1777 tmp";
 
   config = {
     Entrypoint = [ "/bin/dumb-init" "--" ];
     Cmd = [ "/bin/ttsmagic server" ];
-    Env = [ "HOST=0.0.0.0" "PORT=8000" ];
+    Env = [ "HOST=0.0.0.0" "PORT=8000" "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
     WorkingDir = "/ttsmagic";
   };
 }

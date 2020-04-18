@@ -1,21 +1,45 @@
-use async_std::{fs, path::Path, prelude::*, sync::Arc, task::spawn};
+use anyhow::{anyhow, Context, Result};
+use async_std::{fs, path::Path, sync::Arc};
 use chrono::prelude::*;
-use failure::{format_err, Error, ResultExt};
+use futures::future::BoxFuture;
 use image::{imageops, RgbImage};
+use redis::AsyncCommands;
+use serde::Serialize;
 use serde_json::{json, Value};
 use smallvec::SmallVec;
 use sqlx::{Executor, Postgres};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     convert::{TryFrom, TryInto},
+    num::NonZeroU16,
     str::FromStr,
 };
 
 use crate::{
     deck::{Deck, DeckId},
     files::{MediaFile, StaticFiles},
-    scryfall::{self, api::ScryfallApi, ScryfallCard, ScryfallId},
+    notify,
+    scryfall::{self, api::ScryfallApi, ScryfallCard, ScryfallId, ScryfallOracleId},
 };
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "kebab-case", tag = "tag")]
+enum RenderProgress {
+    RenderingImages {
+        deck_id: DeckId,
+        rendered_cards: u16,
+        total_cards: NonZeroU16,
+    },
+    SavingPages {
+        deck_id: DeckId,
+        saved_pages: u16,
+        total_pages: NonZeroU16,
+    },
+    Rendered {
+        deck_id: DeckId,
+        tts_json: Value,
+    },
+}
 
 #[derive(Clone, Debug)]
 pub struct RenderedDeck {
@@ -33,17 +57,17 @@ pub struct RenderedPage {
 }
 
 async fn get_tokens(
-    api: &ScryfallApi,
     db: &mut impl Executor<Database = Postgres>,
     cards: impl Iterator<Item = ScryfallCard>,
-) -> Result<Vec<ScryfallCard>, Error> {
+) -> Result<Vec<ScryfallCard>> {
     let (size_hint, _) = cards.size_hint();
     let mut work_queue = VecDeque::with_capacity(size_hint);
     for card in cards {
         work_queue.push_back(card);
     }
     let mut seen_ids = HashSet::with_capacity(work_queue.len());
-    let mut parts: HashMap<ScryfallId, ScryfallCard> = HashMap::with_capacity(work_queue.len());
+    let mut parts: HashMap<ScryfallOracleId, ScryfallCard> =
+        HashMap::with_capacity(work_queue.len());
 
     while let Some(card) = work_queue.pop_front() {
         if !seen_ids.insert(card.id()?) {
@@ -60,24 +84,24 @@ async fn get_tokens(
             let raw_part_id = part_json
                 .get("id")
                 .ok_or_else(|| {
-                    format_err!(
+                    anyhow!(
                         "Related card object {} (for card {}) is missing its \"id\" field.",
                         i,
                         card_name,
                     )
                 })
-                .with_context(|_| format!("Getting related cards for {}", card_name))?
+                .with_context(|| format!("Getting related cards for {}", card_name))?
                 .as_str()
                 .ok_or_else(|| {
-                    format_err!(
+                    anyhow!(
                         "Related card object {} (for card {}) \"id\" field is not a string.",
                         i,
                         card_name
                     )
                 })
-                .with_context(|_| format!("Getting related cards for {}", card_name))?;
+                .with_context(|| format!("Getting related cards for {}", card_name))?;
             let part_id = ScryfallId::from_str(raw_part_id)
-                .with_context(|_| format!("Getting related cards for {}", card_name))?;
+                .with_context(|| format!("Getting related cards for {}", card_name))?;
             let component_type = match part_json.get("component") {
                 None => {
                     debug!(
@@ -89,13 +113,13 @@ async fn get_tokens(
                 Some(c_value) => c_value
                     .as_str()
                     .ok_or_else(|| {
-                        format_err!(
+                        anyhow!(
                             "Related card {} (for card {}) \"component\" field is not a string.",
                             part_id,
                             card_name
                         )
                     })
-                    .with_context(|_| {
+                    .with_context(|| {
                         format!("Getting related card {} for {}", part_id, card_name)
                     })?,
             };
@@ -126,9 +150,9 @@ async fn get_tokens(
                 debug!("Already seen part {}", part_id);
                 continue;
             }
-            let part_card = scryfall::ensure_card(api, db, part_id)
+            let part_card = scryfall::card_by_id(db, part_id)
                 .await
-                .with_context(|_| format!("Getting related card {} for {}", part_id, card_name))?;
+                .with_context(|| format!("Getting related card {} for {}", part_id, card_name))?;
             let part_oracle_id = part_card.oracle_id()?;
             work_queue.push_back(part_card.clone());
             parts.entry(part_oracle_id).or_insert(part_card);
@@ -146,9 +170,9 @@ struct Pile {
 }
 
 impl Pile {
-    fn new_face_up(cards: Vec<(ScryfallCard, u8)>) -> Result<Self, Error> {
+    fn new_face_up(cards: Vec<(ScryfallCard, u8)>) -> Result<Self> {
         if cards.is_empty() {
-            Err(format_err!("Cannot make a pile of zero cards"))
+            Err(anyhow!("Cannot make a pile of zero cards"))
         } else {
             Ok(Pile {
                 cards,
@@ -157,9 +181,9 @@ impl Pile {
         }
     }
 
-    fn new_face_down(cards: Vec<(ScryfallCard, u8)>) -> Result<Self, Error> {
+    fn new_face_down(cards: Vec<(ScryfallCard, u8)>) -> Result<Self> {
         if cards.is_empty() {
-            Err(format_err!("Cannot make a pile of zero cards"))
+            Err(anyhow!("Cannot make a pile of zero cards"))
         } else {
             Ok(Pile {
                 cards,
@@ -168,70 +192,39 @@ impl Pile {
         }
     }
 
-    async fn expand_full_face_lands(
-        self,
-        db: &mut impl Executor<Database = Postgres>,
-    ) -> Result<Self, Error> {
-        let mut new_cards = Vec::with_capacity(self.cards.len() * 2);
+    // async fn expand_full_face_lands(
+    //     self,
+    //     db: &mut impl Executor<Database = Postgres>,
+    // ) -> Result<Self> {
+    //     let mut new_cards = Vec::with_capacity(self.cards.len() * 2);
 
-        for (card, count) in self.cards {
-            if let Some(bl_type) = card.basic_land_type() {
-                debug!("Found a basic land: {}x {}", count, card.combined_name());
-                let full_faced_cards = scryfall::full_faced_lands(db, bl_type).await?;
-                if full_faced_cards.is_empty() {
-                    warn!(
-                        "Didn't find any full faced lands for basic land type {:?}",
-                        bl_type
-                    );
-                } else {
-                    debug!(
-                        "Found {} full faced {:?} cards",
-                        full_faced_cards.len(),
-                        bl_type
-                    );
-                    let mut by_id: HashMap<ScryfallId, (&ScryfallCard, u8)> = HashMap::new();
-                    {
-                        use rand::Rng;
-                        let mut rng = rand::thread_rng();
-                        for _ in 0..count {
-                            let i = rng.gen_range(0, full_faced_cards.len());
-                            let full_faced_card = &full_faced_cards[i];
-                            let full_faced_card_id = full_faced_card.id()?;
-                            let entry = by_id
-                                .entry(full_faced_card_id)
-                                .or_insert((full_faced_card, 0));
-                            entry.1 += 1;
-                        }
-                    }
-                    let mut full_faced_count = 0;
-                    for (_, (ff_card, ff_count)) in by_id {
-                        debug!(
-                            "Adding {}x {} from {} instead of generic {:?}",
-                            ff_count,
-                            ff_card.id()?,
-                            ff_card
-                                .raw_json()
-                                .get("set_name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown set"),
-                            bl_type,
-                        );
-                        new_cards.push((ff_card.clone(), ff_count));
-                        full_faced_count += ff_count;
-                    }
-                    assert_eq!(full_faced_count, count);
-                    continue;
-                }
-            }
+    //     for (card, count) in self.cards {
+    //         if let Some(bl_type) = card.basic_land_type() {
+    //             debug!("Found a basic land: {}x {}", count, card.combined_name());
+    //             let full_faced_cards = scryfall::full_faced_lands(db, bl_type).await?;
+    //             if full_faced_cards.is_empty() {
+    //                 warn!(
+    //                     "Didn't find any full faced lands for basic land type {:?}",
+    //                     bl_type
+    //                 );
+    //             } else {
+    //                 debug!(
+    //                     "Found {} full faced {:?} cards",
+    //                     full_faced_cards.len(),
+    //                     bl_type
+    //                 );
+    //                 continue;
+    //             }
+    //         }
 
-            new_cards.push((card, count));
-        }
+    //         new_cards.push((card, count));
+    //     }
 
-        Ok(Self {
-            cards: new_cards,
-            face_up: self.face_up,
-        })
-    }
+    //     Ok(Self {
+    //         cards: new_cards,
+    //         face_up: self.face_up,
+    //     })
+    // }
 }
 
 #[derive(Clone, Debug)]
@@ -241,10 +234,9 @@ struct LinearPile {
 }
 
 impl TryFrom<(Pile, &'_ [RenderedPage])> for LinearPile {
-    type Error = failure::Error;
+    type Error = anyhow::Error;
 
     fn try_from((pile, pages): (Pile, &'_ [RenderedPage])) -> Result<LinearPile, Self::Error> {
-        assert!(pile.cards.len() < 100);
         let mut cards = Vec::with_capacity(pile.cards.len());
         let card_id_to_deck_id = {
             let mut mapping = HashMap::new();
@@ -260,29 +252,53 @@ impl TryFrom<(Pile, &'_ [RenderedPage])> for LinearPile {
             let card_id = card.id()?;
             let deck_id = match card_id_to_deck_id.get(&card_id) {
                 Some(deck_id) => *deck_id,
-                None => return Err(format_err!("Card {} not found in pages", card_id)),
+                None => return Err(anyhow!("Card {} not found in pages", card_id)),
             };
             for _ in 0..count {
                 cards.push((card.clone(), deck_id));
             }
         }
+        // if cards.len() >= 100 {
+        //     let preview = {
+        //         let mut buf = String::with_capacity(100);
+        //         buf.push('[');
+        //         for (card, deck_id) in cards.iter().take(5) {
+        //             buf.push_str(&format!("{} ({}), ", card.combined_name(), deck_id));
+        //         }
+        //         buf.push_str("...]");
+        //         buf
+        //     };
+        //     Err(anyhow!(
+        //         "Pile starting with cards {} has more than 100 cards in it!",
+        //         preview
+        //     ))
+        // } else {
         Ok(LinearPile {
             cards,
             face_up: pile.face_up,
         })
+        // }
     }
 }
 
 type Piles = SmallVec<[Pile; 4]>;
 
 async fn collect_card_piles(
-    api: &ScryfallApi,
     db: &mut impl Executor<Database = Postgres>,
     deck: &Deck,
-) -> Result<Piles, Error> {
+) -> Result<Piles> {
     let deck_url = deck.url.clone();
 
-    let mut main_deck = {
+    let commanders_pile = {
+        let mut pile = Vec::with_capacity(deck.commanders.len());
+        for card in deck.commanders.values().cloned() {
+            pile.push((card, 1));
+            pile.sort_by_key(|(c, _)| c.combined_name());
+        }
+        pile
+    };
+
+    let main_deck = {
         let mut pile = Vec::with_capacity(deck.main_deck.len());
         for (_, (card, count)) in deck.main_deck.iter() {
             pile.push((card.clone(), count.clone()));
@@ -290,71 +306,15 @@ async fn collect_card_piles(
         pile.sort_by_key(|(c, _)| c.combined_name());
         pile
     };
-
-    fn count_cards<'a>(cards: impl Iterator<Item = &'a (ScryfallCard, u8)>) -> usize {
-        cards.map(|(_, count)| *count as usize).sum()
-    }
-
-    let mut commanders_pile: Vec<(ScryfallCard, u8)> = vec![];
-    if count_cards(main_deck.iter()) == 100
-        && main_deck
-            .iter()
-            .all(|(c, _)| match c.legal_in("commander") {
-                Ok(true) => true,
-                Ok(false) => {
-                    debug!(
-                        "Card {} disqualified deck from being a commander deck",
-                        c.combined_name()
-                    );
-                    false
-                }
-                Err(e) => {
-                    error!(
-                        "Got error when checking commander legality of main deck: {}",
-                        e
-                    );
-                    true
-                }
-            })
-    {
-        debug!("Looks like a commander deck. Searching for the commander now...");
-        // Dig out the commander and put it in its own pile.
-        let (possible_commanders, non_commanders) = main_deck
-            .into_iter()
-            .partition::<Vec<(ScryfallCard, u8)>, _>(|(c, count)| {
-                *count == 1 && c.can_be_a_commander().unwrap_or(false)
-            });
-        if !possible_commanders.is_empty() {
-            info!(
-                "Found {} possible commander{}: {:?}",
-                possible_commanders.len(),
-                if possible_commanders.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                },
-                possible_commanders
-                    .iter()
-                    .map(|(c, _)| format!("{}", c.combined_name()))
-                    .collect::<Vec<_>>(),
-            );
-        }
-        main_deck = non_commanders;
-        commanders_pile = possible_commanders;
-    }
-
-    let main_deck_count = count_cards(main_deck.iter());
-    info!(
-        "Found main deck with {} card{}: {:?}",
-        main_deck_count,
-        if main_deck_count == 1 { "" } else { "s" },
+    debug!(
+        "Found main deck: {:?}",
         main_deck
             .iter()
             .map(|(c, count)| format!("{}x {}", count, c.combined_name()))
             .collect::<Vec<_>>(),
     );
     if main_deck.is_empty() {
-        return Err(format_err!(
+        return Err(anyhow!(
             "Tried to collect an empty deck (from URL: {})",
             deck_url
         ));
@@ -368,18 +328,14 @@ async fn collect_card_piles(
         pile.sort_by_key(|(c, _)| c.combined_name());
         pile
     };
-    let sideboard_count = count_cards(sideboard.iter());
-    info!(
-        "Found sideboard with {} card{}: {:?}",
-        sideboard_count,
-        if sideboard_count == 1 { "" } else { "s" },
+    debug!(
+        "Found sideboard: {:?}",
         sideboard
             .iter()
             .map(|(c, count)| format!("{}x {}", count, c.combined_name()))
             .collect::<Vec<_>>(),
     );
     let tokens = get_tokens(
-        api,
         db,
         main_deck
             .iter()
@@ -387,29 +343,24 @@ async fn collect_card_piles(
             .map(|(c, _)| c.clone()),
     )
     .await
-    .with_context(|_| format!("Getting tokens for deck {}", deck_url))?;
+    .with_context(|| format!("Getting tokens for deck {}", deck_url))?;
     let tokens: Vec<_> = tokens.into_iter().map(|t| (t, 1)).collect();
-    let tokens_count = count_cards(tokens.iter());
-    info!(
-        "Found {} token{}: {:?}",
-        tokens_count,
-        if tokens_count == 1 { "" } else { "s" },
-        tokens
-            .iter()
-            .map(|(c, _)| c.combined_name())
-            .collect::<Vec<_>>()
-    );
+    if !tokens.is_empty() {
+        debug!(
+            "Found tokens: {:?}",
+            tokens
+                .iter()
+                .map(|(c, _)| c.combined_name())
+                .collect::<Vec<_>>()
+        );
+    }
     let mut piles = SmallVec::new();
 
     if !commanders_pile.is_empty() {
         piles.push(Pile::new_face_up(commanders_pile)?);
     }
     assert!(!main_deck.is_empty()); // checked earlier
-    piles.push(
-        Pile::new_face_down(main_deck)?
-            .expand_full_face_lands(db)
-            .await?,
-    );
+    piles.push(Pile::new_face_down(main_deck)?);
     if !sideboard.is_empty() {
         piles.push(Pile::new_face_up(sideboard)?);
     }
@@ -428,17 +379,17 @@ struct Page {
 }
 
 impl Page {
-    fn new(expected_cards: usize) -> Result<Self, Error> {
+    async fn new(expected_cards: usize) -> Result<Self> {
         let expected_cards: u32 = expected_cards.try_into()?;
         const VALID_WIDTH_HEIGHTS: &[(u32, u32)] = &[
             (2, 2),
-            (3, 3),
-            (4, 4),
-            (5, 5),
-            (6, 6),
-            (7, 7),
-            (8, 7),
-            (9, 7),
+            (3, 2),
+            (4, 3),
+            (5, 4),
+            (6, 4),
+            (7, 5),
+            (8, 6),
+            (9, 6),
         ];
         let mut size: Option<(u32, u32)> = None;
         for (w, h) in VALID_WIDTH_HEIGHTS.iter().copied() {
@@ -451,38 +402,47 @@ impl Page {
         let page = Page {
             width,
             height,
-            image: new_blank_page(width, height)?,
+            image: new_blank_page(width, height).await?,
             card_mapping: HashMap::new(),
         };
         Ok(page)
     }
 }
 
-const CARD_WIDTH: u32 = 745;
-const CARD_HEIGHT: u32 = 1040;
+// format=large: (672, 936)
+// format=png:   (745, 1040)
+const CARD_WIDTH: u32 = 672;
+const CARD_HEIGHT: u32 = 936;
 
-fn fixup_size(image: RgbImage) -> RgbImage {
+async fn fixup_size(image: RgbImage) -> RgbImage {
     const CARD_SIZE: (u32, u32) = (CARD_WIDTH, CARD_HEIGHT);
     if image.dimensions() == CARD_SIZE {
         image
     } else {
-        debug!(
-            "Resizing a card image from {:?} to {:?}",
-            image.dimensions(),
-            CARD_SIZE
-        );
-        imageops::resize(
-            &image,
-            CARD_WIDTH,
-            CARD_HEIGHT,
-            imageops::FilterType::Lanczos3,
-        )
+        let resized = async_std::task::spawn_blocking(move || {
+            debug!(
+                "Resizing a card image from {:?} to {:?}",
+                image.dimensions(),
+                CARD_SIZE
+            );
+            imageops::resize(
+                &image,
+                CARD_WIDTH,
+                CARD_HEIGHT,
+                imageops::FilterType::Lanczos3,
+            )
+        });
+        resized.await
     }
 }
 
-fn add_to_page(page: &mut RgbImage, card: RgbImage, row: u32, column: u32) {
-    let card = fixup_size(card);
-    imageops::overlay(page, &card, column * CARD_WIDTH, row * CARD_HEIGHT);
+async fn add_to_page(mut page: RgbImage, card: RgbImage, row: u32, column: u32) -> RgbImage {
+    let added = async_std::task::spawn_blocking(move || {
+        let card = async_std::task::block_on(fixup_size(card));
+        imageops::overlay(&mut page, &card, column * CARD_WIDTH, row * CARD_HEIGHT);
+        page
+    });
+    added.await
 }
 
 lazy_static::lazy_static! {
@@ -491,19 +451,22 @@ lazy_static::lazy_static! {
         let bytes = StaticFiles::get("ttsmagic_hidden_face.png")
             .expect("ttsmagic_hidden_face.png is missing from static folder");
         let image = image::load_from_memory(&bytes).expect("Failed to load static file ttsmagic_hidden_face.png").to_rgb();
-        fixup_size(image)
+        async_std::task::block_on(fixup_size(image))
     };
 }
 
-fn new_blank_page(cards_wide: u32, cards_high: u32) -> Result<RgbImage, Error> {
+async fn new_blank_page(cards_wide: u32, cards_high: u32) -> Result<RgbImage> {
     debug!(
-        "Creating new blank page image ({} cards across and {} cards tall)",
-        cards_wide, cards_high
+        "Creating new blank page image ({} cards across and {} cards tall, {}x{} pixels)",
+        cards_wide,
+        cards_high,
+        CARD_WIDTH * cards_wide,
+        CARD_HEIGHT * cards_high
     );
-    let mut page = RgbImage::new(CARD_WIDTH * cards_wide, CARD_HEIGHT * cards_high);
+    let page = RgbImage::new(CARD_WIDTH * cards_wide, CARD_HEIGHT * cards_high);
     let row = cards_high - 1;
     let column = cards_wide - 1;
-    add_to_page(&mut page, HIDDEN_IMAGE.clone(), row, column);
+    let page = add_to_page(page, HIDDEN_IMAGE.clone(), row, column).await;
     Ok(page)
 }
 
@@ -522,56 +485,66 @@ fn new_blank_page(cards_wide: u32, cards_high: u32) -> Result<RgbImage, Error> {
 //     api: Arc<ScryfallApi>,
 //     root: PathBuf,
 //     seen_cards: Arc<Mutex<HashSet<ScryfallId>>>,
-// ) -> impl Fn(usize, usize, &ScryfallCard) -> Result<Option<RgbImage>, Error> {
+// ) -> impl Fn(usize, usize, &ScryfallCard) -> Result<Option<RgbImage>> {
 //     move |i, j, card| {}
 // }
 
-async fn make_pages<P: AsRef<Path>>(
+async fn make_pages<P: AsRef<Path>, R: AsyncCommands>(
     api: Arc<ScryfallApi>,
+    redis: &mut R,
     root: P,
+    deck: &Deck,
     piles: Arc<Piles>,
-) -> Result<Vec<Page>, Error> {
-    // TODO: this always renders pages very large, but we could make them
-    // smaller for pages that don't need that many slots.
+) -> Result<Vec<Page>> {
     let root = fs::canonicalize(root).await?;
     let mut page_images = Vec::with_capacity(piles.len());
-    let mut current_page = Page::new(piles.iter().map(|p| p.cards.len()).sum())?;
-    let mut card_load_futures: Vec<
-        Box<dyn Future<Output = Result<(ScryfallCard, RgbImage), Error>> + 'static>,
-    > = vec![];
-    // let cards_result: Result<Vec<(usize, usize, ScryfallCard, RgbImage)>, Error> =
+    let mut current_page = Page::new(piles.iter().map(|p| p.cards.len()).sum()).await?;
+    // These futures are `spawn`ed, which means they will be evaluated in
+    // parallel. This works out to be *much* faster than loading them serially,
+    // though it does take more memory.
+    let mut card_load_futures: Vec<(String, BoxFuture<'static, Result<(ScryfallCard, RgbImage)>>)> =
+        vec![];
     for pile in piles.iter() {
         for (card, _count) in pile.cards.iter() {
             let task_card = card.clone();
             let root = root.clone();
             let api = Arc::clone(&api);
-            let load_image_future = async move {
-                let card_id: ScryfallId = task_card.id()?;
-                let image = task_card
-                    .ensure_image(&root, &api)
-                    .await
-                    .with_context(|_| {
-                        format!(
-                            "Loading image for card {} ({})",
-                            task_card.combined_name(),
-                            card_id,
-                        )
-                    })?;
-                let image = fixup_size(image);
-                Ok::<_, Error>(image)
-            };
             let wrapper_card = card.clone();
-            card_load_futures.push(Box::new(spawn(async move {
-                let image = load_image_future.await?;
+            let card_name = card.combined_name();
+            let card_name_2 = card_name.clone();
+            let future = Box::pin(async move {
+                let card_id: ScryfallId = task_card.id()?;
+                debug!("Loading card {}...", card_name);
+                let image = task_card.ensure_image(&root, &api).await.with_context(|| {
+                    format!(
+                        "Loading image for card {} ({})",
+                        task_card.combined_name(),
+                        card_id,
+                    )
+                })?;
+                let image = fixup_size(image).await;
+                debug!("Finished loading card {}", card_name);
                 Ok((wrapper_card, image))
-            })) as Box<dyn Future<Output = _>>);
+            }) as BoxFuture<_>;
+            card_load_futures.push((card_name_2, future));
         }
     }
-    let image_count = card_load_futures.len();
-    let mut images_stream =
-        crate::utils::futures_iter_to_stream(card_load_futures.into_iter()).enumerate();
-    while let Some((k, card_info)) = images_stream.next().await {
-        let (card, image) = card_info?;
+    let image_count = NonZeroU16::new(card_load_futures.len().try_into()?)
+        .ok_or_else(|| anyhow!("Tried to render a deck with no cards in it"))?;
+    let mut images_rendered: u16 = 0;
+    notify::notify_user(
+        redis,
+        deck.user_id,
+        "deck_rendering",
+        RenderProgress::RenderingImages {
+            deck_id: deck.id,
+            rendered_cards: 0,
+            total_cards: image_count,
+        },
+    )
+    .await?;
+    for (k, (_card_name, card_info_future)) in card_load_futures.into_iter().enumerate() {
+        let (card, image) = card_info_future.await?;
         let card_id = card.id()?;
         if (current_page.card_mapping.len() as u32)
             >= ((current_page.width * current_page.height) - 1)
@@ -581,7 +554,7 @@ async fn make_pages<P: AsRef<Path>>(
                 page_images.len()
             );
             page_images.push(current_page);
-            current_page = Page::new(image_count - k - 1)?;
+            current_page = Page::new((image_count.get() as usize) - k - 1).await?;
         }
         let page_index: u32 = current_page.card_mapping.len() as u32;
         let cards_per_page = (current_page.width * current_page.height) - 1;
@@ -589,10 +562,31 @@ async fn make_pages<P: AsRef<Path>>(
         let column = (page_index % cards_per_page) % current_page.width;
         assert!(row < current_page.height);
         assert!(column < current_page.width);
-        add_to_page(&mut current_page.image, image, row, column);
+        debug!(
+            "Placing card {} ({}) on page {} at row {}, column {}",
+            card.combined_name(),
+            card_id,
+            page_images.len(),
+            row,
+            column
+        );
+        current_page.image = add_to_page(current_page.image, image, row, column).await;
         current_page
             .card_mapping
             .insert(card_id, page_index.try_into().unwrap());
+        images_rendered += 1;
+
+        notify::notify_user(
+            redis,
+            deck.user_id,
+            "deck_rendering",
+            RenderProgress::RenderingImages {
+                deck_id: deck.id,
+                rendered_cards: images_rendered,
+                total_cards: image_count,
+            },
+        )
+        .await?;
     }
     if !current_page.card_mapping.is_empty() {
         page_images.push(current_page);
@@ -601,14 +595,29 @@ async fn make_pages<P: AsRef<Path>>(
     Ok(page_images)
 }
 
-async fn save_pages<P: AsRef<Path>>(
+async fn save_pages<P: AsRef<Path>, R: AsyncCommands>(
+    redis: &mut R,
     root: P,
-    deck_id: DeckId,
+    deck: &Deck,
     pages: Vec<Page>,
-) -> Result<Vec<RenderedPage>, Error> {
+) -> Result<Vec<RenderedPage>> {
+    let total_pages = NonZeroU16::new(pages.len().try_into()?)
+        .ok_or_else(|| anyhow!("Tried to save zero pages"))?;
+    notify::notify_user(
+        redis,
+        deck.user_id,
+        "deck_rendering",
+        RenderProgress::SavingPages {
+            deck_id: deck.id,
+            saved_pages: 0,
+            total_pages,
+        },
+    )
+    .await?;
+
     let mut saved_pages = Vec::with_capacity(pages.len());
     for (i, page) in pages.into_iter().enumerate() {
-        let deck_uuid = format!("{}", deck_id.as_uuid());
+        let deck_uuid = format!("{}", deck.id.as_uuid());
         let page_filename = format!(
             "pages/{}/{}/{}_{}.jpg",
             &deck_uuid[0..2],
@@ -619,13 +628,24 @@ async fn save_pages<P: AsRef<Path>>(
         let f = MediaFile::create(&root, &page_filename)?;
         page.image.save(&f.path())?;
         let saved = f.finalize().await?;
-        info!("Saved page image {}", saved.path().to_string_lossy());
+        debug!("Saved page image {}", saved.path().to_string_lossy());
         saved_pages.push(RenderedPage {
             width: page.width,
             height: page.height,
             image: saved,
             card_mapping: page.card_mapping,
         });
+        notify::notify_user(
+            redis,
+            deck.user_id,
+            "deck_rendering",
+            RenderProgress::SavingPages {
+                deck_id: deck.id,
+                saved_pages: (i + 1).try_into()?,
+                total_pages,
+            },
+        )
+        .await?;
     }
 
     Ok(saved_pages)
@@ -635,7 +655,7 @@ fn render_piles_to_json<'a>(
     deck_title: &str,
     piles: Piles,
     pages: &'a [RenderedPage],
-) -> Result<Value, Error> {
+) -> Result<Value> {
     // let mut pages = Vec::with_capacity(saved_pages.len());
     let base_transform = json!({
         "posX": 0.0,
@@ -649,27 +669,27 @@ fn render_piles_to_json<'a>(
         "scaleZ": 1.0,
     });
     let color = json!({"r": 1.0, "g": 1.0, "b": 1.0});
-    let decks_json = {
-        let back_url = StaticFiles::get_url("backing.jpg")?.to_string();
-        let mut decks = json!({});
-        for (i, page) in pages.iter().enumerate() {
+    let decks_json_objs = {
+        let back_url = "https://ttsmagic.cards/files/card_data/backing.jpg";
+        let mut decks = Vec::with_capacity(pages.len());
+        for page in pages.iter() {
             let face_url = page.image.url()?.to_string();
-            decks[(i + 1).to_string()] = json!({
+            decks.push(json!({
                 "FaceURL": face_url,
                 "BackURL": back_url,
                 "NumHeight": page.height,
                 "NumWidth": page.width,
-            });
+            }));
         }
         decks
     };
     let linear_piles = piles
         .into_iter()
         .map(|pile: Pile| <LinearPile as TryFrom<(Pile, &[RenderedPage])>>::try_from((pile, pages)))
-        .collect::<Result<Vec<_>, Error>>()?;
+        .collect::<Result<Vec<_>>>()?;
     let mut stacks = Vec::with_capacity(linear_piles.len());
     for (i, pile) in linear_piles.iter().enumerate() {
-        let root_transform = {
+        let root_transform: Value = {
             let mut t = base_transform.clone();
             t["posX"] = json!(3.0 * (i as f64));
             t["rotZ"] = if pile.face_up {
@@ -677,6 +697,21 @@ fn render_piles_to_json<'a>(
             } else {
                 json!(180.0)
             };
+            t
+        };
+
+        let decks_json: Value = {
+            let mut page_ids = HashSet::with_capacity(decks_json_objs.len());
+            for (_card, card_id) in pile.cards.iter() {
+                let page_id = (*card_id as usize) / 100;
+                page_ids.insert(page_id);
+            }
+            assert!(!page_ids.is_empty());
+            let mut pages = json!({});
+            for page_id in page_ids {
+                pages[format!("{}", page_id)] = decks_json_objs[page_id - 1].clone();
+            }
+            pages
         };
 
         let mut stack = json!({
@@ -689,10 +724,13 @@ fn render_piles_to_json<'a>(
         });
 
         match pile.cards.as_slice() {
-            [(card, deck_id)] => {
+            [(card, card_id)] => {
                 stack["Name"] = json!("Card");
                 stack["Nickname"] = json!(card.combined_name());
-                stack["CardID"] = json!(deck_id);
+                stack["CardID"] = json!(card_id);
+                if let Ok(d) = card.description() {
+                    stack["Description"] = json!(d);
+                }
             }
             cards => {
                 let card_count = cards.len();
@@ -703,14 +741,18 @@ fn render_piles_to_json<'a>(
                 let mut contained_objects = Vec::with_capacity(card_count);
                 for (card, deck_id) in pile.cards.iter() {
                     deck_ids.push(*deck_id);
-                    contained_objects.push(json!({
+                    let mut card_json = json!({
                         "Name": "Card",
                         "CardID": deck_id,
                         "ColorDiffuse": color,
                         "CustomDeck": decks_json.clone(),
                         "Transform": base_transform.clone(),
                         "Nickname": json!(card.names().first()),
-                    }));
+                    });
+                    if let Ok(d) = card.description() {
+                        card_json["Description"] = json!(d);
+                    }
+                    contained_objects.push(card_json);
                 }
                 stack["DeckIDs"] = Value::from(deck_ids);
                 stack["ContainedObjects"] = Value::from(contained_objects);
@@ -724,20 +766,38 @@ fn render_piles_to_json<'a>(
     }))
 }
 
-pub async fn render_deck<P: AsRef<Path>>(
+pub async fn render_deck<P: AsRef<Path>, R: AsyncCommands>(
     api: Arc<ScryfallApi>,
     db: &mut impl Executor<Database = Postgres>,
+    redis: &mut R,
     root: P,
     deck: &Deck,
-) -> Result<RenderedDeck, Error> {
-    let piles = collect_card_piles(&api, db, deck)
+) -> Result<RenderedDeck> {
+    info!("Rendering deck {} ({})", deck.title, deck.id);
+    let piles = collect_card_piles(db, deck)
         .await
         .context("Collecting and sorting cards")?;
-    let rendered_pages = make_pages(Arc::clone(&api), &root, Arc::new(piles.clone()))
-        .await
-        .context("Rendering piles to images")?;
-    let saved_pages = save_pages(&root, deck.id, rendered_pages).await?;
+    let rendered_pages = make_pages(
+        Arc::clone(&api),
+        redis,
+        &root,
+        &deck,
+        Arc::new(piles.clone()),
+    )
+    .await
+    .context("Rendering piles to images")?;
+    let saved_pages = save_pages(redis, &root, &deck, rendered_pages).await?;
     let json = render_piles_to_json(&deck.title, piles, saved_pages.as_slice())?;
+    notify::notify_user(
+        redis,
+        deck.user_id,
+        "deck_rendering",
+        RenderProgress::Rendered {
+            deck_id: deck.id,
+            tts_json: json.clone(),
+        },
+    )
+    .await?;
 
     Ok(RenderedDeck {
         json_description: json,

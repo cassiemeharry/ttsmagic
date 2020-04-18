@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Context, Error, Result};
 use async_std::{
     fs,
     path::{Path, PathBuf},
@@ -5,12 +6,10 @@ use async_std::{
     sync::Mutex,
     task,
 };
-use chrono::{prelude::*};
-use failure::{format_err, Error, ResultExt};
+use chrono::prelude::*;
 use image::RgbImage;
 use serde::Deserialize;
 use serde_json::Value;
-use url::Url;
 
 use super::ScryfallId;
 use crate::files::MediaFile;
@@ -86,20 +85,6 @@ impl ScryfallApi {
 }
 
 impl ScryfallApi {
-    pub async fn lookup_by_id(&self, id: ScryfallId) -> Result<Value, Error> {
-        info!("Looking up card {} via the Scryfall API", id);
-        let url = format!("https://api.scryfall.com/cards/{}?format=json", id);
-
-        let mut response = self.get(&url).await?;
-        let resp_string = response
-            .body_string()
-            .await
-            .map_err(Error::from_boxed_compat)?;
-
-        let json: Value = serde_json::from_str(&resp_string)?;
-        Ok(json)
-    }
-
     fn card_image_rel_filename(id: ScryfallId, format: ImageFormat) -> PathBuf {
         let id_str = format!("{}", id);
         assert!(id_str.len() >= 4); // this should always be true because the IDs are UUIDs
@@ -124,7 +109,7 @@ impl ScryfallApi {
         root: P,
         format: ImageFormat,
         face: ImageFace,
-    ) -> Result<RgbImage, Error> {
+    ) -> Result<RgbImage> {
         let mut format_opt = Some(format);
         let mut last_error = None;
         // Look for existing files first.
@@ -134,7 +119,11 @@ impl ScryfallApi {
                 match image::open(&p) {
                     Ok(i) => return Ok(i.to_rgb()),
                     Err(e) => {
-                        error!("Error opening image at {}, deleting the file: {}", p.to_string_lossy(), e);
+                        error!(
+                            "Error opening image at {}, deleting the file: {}",
+                            p.to_string_lossy(),
+                            e
+                        );
                         fs::remove_file(&p).await?;
                     }
                 }
@@ -146,7 +135,11 @@ impl ScryfallApi {
                 match image::open(&p) {
                     Ok(i) => return Ok(i.to_rgb()),
                     Err(e) => {
-                        error!("Error opening image at {}, deleting the file: {}", p.to_string_lossy(), e);
+                        error!(
+                            "Error opening image at {}, deleting the file: {}",
+                            p.to_string_lossy(),
+                            e
+                        );
                         fs::remove_file(&p).await?;
                     }
                 }
@@ -165,7 +158,7 @@ impl ScryfallApi {
             let mut response = 'redirect: loop {
                 loop_counter += 1;
                 if loop_counter > 5 {
-                    return Err(format_err!("Redirect loop"));
+                    return Err(anyhow!("Redirect loop"));
                 }
                 debug!("Loading Scryfall URL: {}", url);
                 let response = self.get(&url).await;
@@ -182,7 +175,7 @@ impl ScryfallApi {
                     200 => break 'redirect r,
                     302 => {
                         let location = r.header("Location").ok_or_else(|| {
-                            format_err!("Missing Location header in Scryfall image redirect")
+                            anyhow!("Missing Location header in Scryfall image redirect")
                         })?;
                         debug!("Got redirect from {} to {}", url, location);
                         url = location.to_string();
@@ -193,7 +186,7 @@ impl ScryfallApi {
                             "Failed to load image from URL {}: got status {}",
                             url, other
                         );
-                        last_error = Some(format_err!(
+                        last_error = Some(anyhow!(
                             "Got unexpected status {} while getting image",
                             other
                         ));
@@ -212,8 +205,7 @@ impl ScryfallApi {
                     ImageFormat::Normal => image::ImageFormat::Jpeg,
                     ImageFormat::Small => image::ImageFormat::Jpeg,
                 };
-                image::load_from_memory_with_format(bytes.as_slice(), img_format)?
-                    .to_rgb()
+                image::load_from_memory_with_format(bytes.as_slice(), img_format)?.to_rgb()
             };
 
             let mut f = MediaFile::create(&root, &rel_filename)
@@ -235,26 +227,7 @@ impl ScryfallApi {
         Err(last_error.unwrap())
     }
 
-    pub async fn lookup_by_name(&self, name: &str) -> Result<Value, Error> {
-        info!("Looking for a card named {} via the Scryfall API", name);
-        let url = {
-            let mut url = Url::parse("https://api.scryfall.com/cards/named?format=json").unwrap();
-            url.query_pairs_mut().append_pair("exact", name);
-            url.into_string()
-        };
-
-        let mut response = self.get(&url).await?;
-
-        let resp_string = response
-            .body_string()
-            .await
-            .map_err(Error::from_boxed_compat)?;
-
-        let json: Value = serde_json::from_str(&resp_string)?;
-        Ok(json)
-    }
-
-    pub async fn get_bulk_data(&self, file: &str) -> Result<Value, Error> {
+    pub async fn get_bulk_data(&self, file: &str) -> Result<Value> {
         const BULK_URL: &'static str = "https://api.scryfall.com/bulk-data";
 
         let mut response = self.get(BULK_URL).await?;
@@ -282,25 +255,22 @@ impl ScryfallApi {
         for item in bulk_response.data {
             debug!("Looking at listing file {}", item.type_);
             if item.type_ == file {
-                debug!("Found it!");
+                info!("Downloading bulk file {}", item.permalink_uri);
                 let mut response = self.get(item.permalink_uri).await?;
                 let bulk_json = response.body_json().await?;
                 return Ok(bulk_json);
             }
         }
-        Err(format_err!(
-            "Didn't find file {} among bulk downloads",
-            file
-        ))
+        Err(anyhow!("Didn't find file {} among bulk downloads", file))
     }
 
-    async fn get(&self, url: &str) -> Result<surf::Response, Error> {
+    async fn get(&self, url: &str) -> Result<surf::Response> {
         self.delay().await;
         let request = self.client.get(url).set_header(
             "User-Agent",
             concat!("ttsmagic.cards/", env!("CARGO_PKG_VERSION")),
         );
-        request.await.map_err(Error::from_boxed_compat)
+        Ok(request.await.map_err(Error::msg)?)
     }
 
     async fn delay(&self) {

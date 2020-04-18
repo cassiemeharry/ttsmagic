@@ -14,5 +14,5 @@ let
 in naersk.buildPackage {
   inherit src;
   remapPathPrefix = true;
-  buildInputs = [pkgs.pkg-config pkgs.openssl];
+  buildInputs = [ pkgs.cacert pkgs.pkg-config pkgs.openssl ];
 }

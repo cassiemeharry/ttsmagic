@@ -5,7 +5,12 @@ let
 in
 pkgs.mkShell {
   buildInputs = [
+    pkgs.colordiff
+    pkgs.elm2nix
+    pkgs.elmPackages.elm
+    pkgs.elmPackages.elm-format
     pkgs.file
+    pkgs.inotify-tools
     pkgs.pkg-config
     pkgs.python3
     pkgs.openssl.dev

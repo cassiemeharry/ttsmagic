@@ -1,20 +1,26 @@
-use failure::Error;
+use anyhow::Result;
 use sqlx::{Executor, Postgres};
 use std::time::{Duration, Instant};
 
+macro_rules! migration {
+    ($name:literal) => {
+        ($name, include_str!(concat!("../schema/", $name, ".sql")))
+    };
+}
+
 static MIGRATIONS: &[(&'static str, &'static str)] = &[
-    ("0001_initial", include_str!("../schema/0001_initial.sql")),
-    (
-        "0002_create_user_and_decks",
-        include_str!("../schema/0002_create_user_and_decks.sql"),
-    ),
+    migration!("0001_initial"),
+    migration!("0002_create_user_and_decks"),
+    migration!("0003_deck_multiple_piles"),
+    migration!("0004_fix_deck_entry_pk"),
+    migration!("0005_case_insensitive_card_name_search"),
 ];
 
 async fn apply_migration(
     db: &mut impl Executor<Database = Postgres>,
     label: &str,
     sql: &str,
-) -> Result<Option<Duration>, sqlx::Error> {
+) -> Result<Option<Duration>> {
     let row_opt = sqlx::query("SELECT 1 FROM migrations WHERE label = $1")
         .bind(label)
         .fetch_optional(db)
@@ -39,7 +45,7 @@ async fn apply_migration(
     }
 }
 
-pub async fn apply_all(db: &mut sqlx::PgPool) -> Result<(), Error> {
+pub async fn apply_all(db: &mut sqlx::PgPool) -> Result<()> {
     info!("Running migrations...");
     sqlx::query(
         "\
@@ -64,8 +70,8 @@ CREATE TABLE IF NOT EXISTS migrations
             }
             Err(e) => {
                 tx.rollback().await?;
-                match &e {
-                    sqlx::Error::Database(db_error) => {
+                match e.downcast_ref::<sqlx::Error>() {
+                    Some(sqlx::Error::Database(db_error)) => {
                         error!(
                             "Failed to apply migration {}: {}",
                             label,
