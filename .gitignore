@@ -5,4 +5,5 @@
 /secrets
 /target
 /*.json
-/frontend/elm-stuff
+/ttsmagic-server/static/ttsmagic_frontend.js
+/ttsmagic-server/static/ttsmagic_frontend_bg.wasm

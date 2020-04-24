@@ -54,10 +54,11 @@ code {
 #generated-decks ul {
     list-style: none;
     padding-left: 0;
-    margin: 0 auto;
+    margin: 20px auto;
     max-width: 75%;
     min-width: 250px;
     text-align: left;
+    border: 1px solid rgba(0, 0, 0, 0.1);
 }
 #generated-decks li {
     display: flex;

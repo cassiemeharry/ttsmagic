@@ -204,7 +204,7 @@ impl Component for DeckList {
         html! {
             <div id="generated-decks">
                 <h3> { "Your decks:" } </h3>
-                { deck_list }
+                <ul> { deck_list } </ul>
             </div>
         }
     }
