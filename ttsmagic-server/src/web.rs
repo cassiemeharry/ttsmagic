@@ -10,16 +10,17 @@ mod ws;
 
 use crate::scryfall::api::ScryfallApi;
 
-#[derive(Debug, Error)]
-#[error("Tide error: {inner:?}")]
-struct TideError {
-    inner: std::sync::Mutex<tide::Error>,
+pub trait AnyhowTideCompat<T> {
+    fn tide_compat(self) -> std::result::Result<T, AnyhowTideCompatError>;
 }
 
-impl From<tide::Error> for TideError {
-    fn from(inner: tide::Error) -> TideError {
-        let inner = std::sync::Mutex::new(inner);
-        TideError { inner }
+#[derive(Debug, Error)]
+#[error("{0}")]
+pub struct AnyhowTideCompatError(anyhow::Error);
+
+impl<T, E: Into<anyhow::Error>> AnyhowTideCompat<T> for std::result::Result<T, E> {
+    fn tide_compat(self) -> std::result::Result<T, AnyhowTideCompatError> {
+        self.map_err(|e| AnyhowTideCompatError(e.into()))
     }
 }
 
@@ -54,8 +55,8 @@ pub async fn run_server(
     });
     let mut app = tide::with_state(state.clone());
 
-    app.middleware(tide::middleware::RequestLogger::new());
-    app.middleware(session::middleware);
+    app.middleware(tide::log::LogMiddleware::new());
+    app.middleware(session::SessionMiddleware::new());
 
     app.at("/").get(app::home_page);
     app.at("/decks/:deck_id").get(deck::download_deck_json);
@@ -63,7 +64,6 @@ pub async fn run_server(
     app.at("/demo-login/").get(app::demo_login);
     app.at("/steam/login/").get(steam::begin_login);
     app.at("/steam/complete/").get(steam::handle_redirect);
-    app.at("/steam/login/").get(steam::begin_login);
     app.at("/logout/").get(steam::logout);
 
     info!(

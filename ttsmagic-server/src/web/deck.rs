@@ -1,16 +1,19 @@
 use std::str::FromStr;
-use tide::{Request, Response};
+use tide::{http::headers::HeaderName, Request, Response, Result, StatusCode};
 use ttsmagic_types::DeckId;
 
 use super::AppState;
-use crate::{deck::Deck, web::session::SessionGetExt};
+use crate::{
+    deck::Deck,
+    web::{session::SessionGetExt, AnyhowTideCompat},
+};
 
-pub async fn download_deck_json(req: Request<AppState>) -> Response {
+pub async fn download_deck_json(req: Request<AppState>) -> Result {
     macro_rules! ensure_404 {
         ($cond:expr, $msg:literal, $($arg:expr),* $(,)*) => {
             if !$cond {
                 error!($msg, $($arg,)*);
-                return Response::new(404);
+                return Err(tide::Error::from_str(StatusCode::NotFound, "Invalid deck"));
             }
         }
     };
@@ -18,7 +21,7 @@ pub async fn download_deck_json(req: Request<AppState>) -> Response {
         ($opt:expr) => {
             match $opt {
                 Some(x) => x,
-                None => return Response::new(404),
+                None => return Err(tide::Error::from_str(StatusCode::NotFound, "Invalid deck")),
             }
         };
     };
@@ -28,12 +31,11 @@ pub async fn download_deck_json(req: Request<AppState>) -> Response {
                 Ok(x) => x,
                 Err(e) => {
                     error!($msg, $($arg,)* e);
-                    return Response::new(404);
+                    return Err(tide::Error::from_str(StatusCode::NotFound, "Invalid deck"));
                 }
             }
         };
     };
-    let _404 = Response::new(404);
     let user = {
         let session_opt_future = req.get_session();
         let session_opt = session_opt_future.await;
@@ -56,15 +58,8 @@ pub async fn download_deck_json(req: Request<AppState>) -> Response {
         )
     };
     let state = req.state();
-    let mut db = result_404!(
-        state.db_pool.acquire().await,
-        "Failed to open DB connection: {}",
-    );
-    let deck_opt = result_404!(
-        Deck::get_by_id(&mut db, deck_id).await,
-        "Failed to look up deck with ID {}: {}",
-        deck_id,
-    );
+    let mut db = state.db_pool.acquire().await?;
+    let deck_opt = Deck::get_by_id(&mut db, deck_id).await.tide_compat()?;
     let mut deck = opt_404!(deck_opt);
     ensure_404!(
         deck.user_id == user.id,
@@ -94,14 +89,15 @@ pub async fn download_deck_json(req: Request<AppState>) -> Response {
 
     let json_mime = FromStr::from_str("application/json".into()).unwrap();
     let rendered_json = serde_json::to_string_pretty(&deck_json).unwrap();
-    Response::new(200)
+    let resp = Response::new(StatusCode::Ok)
         .body_string(rendered_json)
         .set_mime(json_mime)
         .set_header(
-            "Content-Disposition",
+            HeaderName::from_ascii(b"Content-Disposition".to_vec()).unwrap(),
             format!(
                 "attachment; filename=\"{}.json\"",
                 deck.title.replace('"', "'")
             ),
-        )
+        );
+    Ok(resp)
 }

@@ -1,40 +1,48 @@
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context};
 use serde::Deserialize;
 use std::borrow::Cow;
-use tide::{http::status::StatusCode, IntoResponse, Request, Response};
+use tide::{http::StatusCode, Request, Response, Result};
 use url::Url;
 
 use super::AppState;
 use crate::{
     user::User,
-    web::session::{Session, SessionClearExt, SessionSetExt},
+    web::{
+        session::{Session, SessionClearExt, SessionSetExt},
+        AnyhowTideCompat,
+    },
 };
 
-// mod secrets;
+lazy_static::lazy_static! {
+    pub static ref LOCATION: tide::http::headers::HeaderName =
+        tide::http::headers::HeaderName::from_ascii(b"Location".to_vec()).unwrap();
+}
 
 const OPENID_EXT_SREG: &'static str = "http://openid.net/extensions/sreg/1.1";
 const OPENID_IDENTIFIER_SELECT: &'static str = "http://specs.openid.net/auth/2.0/identifier_select";
 const OPENID_PROTOCOL_VERSION: &'static str = "http://specs.openid.net/auth/2.0";
 const STEAM_OPENID_ENDPOINT: &'static str = "https://steamcommunity.com/openid/login";
 
-fn return_to_url<T>(req: &Request<T>) -> Result<Url> {
+fn return_to_url<T>(req: &Request<T>) -> anyhow::Result<Url> {
     let this_uri = req.uri();
     debug!("Starting Steam login from {}", this_uri);
     let realm = format!(
         "{}://{}",
-        this_uri.scheme_str().unwrap_or("http"),
+        this_uri.scheme(),
         this_uri
-            .authority_part()
-            .map(|a| a.as_str())
-            .or_else(|| req.header("host"))
+            .host_str()
+            .or_else(|| req
+                .header(&tide::http::headers::HOST)
+                .and_then(|vals| vals.get(0))
+                .map(|hv| hv.as_str()))
             .unwrap_or("ttsmagic.cards"),
     );
     let url = Url::parse(&format!("{}/beta/steam/complete/", realm))?;
     Ok(url)
 }
 
-async fn begin_login_inner(req: Request<AppState>) -> Result<Response> {
-    let rt_url = return_to_url(&req)?;
+pub async fn begin_login(req: Request<AppState>) -> Result {
+    let rt_url = return_to_url(&req).tide_compat()?;
     let return_to = format!("{}", rt_url);
     let realm = format!("{}://{}/", rt_url.scheme(), rt_url.host_str().unwrap());
     let params = &[
@@ -48,17 +56,18 @@ async fn begin_login_inner(req: Request<AppState>) -> Result<Response> {
         ("openid.sreg.optional", "fullname,email,nickname"),
     ];
     let login_redirect_uri = Url::parse_with_params(STEAM_OPENID_ENDPOINT, params)?;
-    Ok(Response::new(307).set_header("Location", login_redirect_uri))
+    Ok(Response::new(StatusCode::TemporaryRedirect)
+        .set_header(LOCATION.clone(), login_redirect_uri))
 }
 
-pub async fn begin_login(req: Request<AppState>) -> Response {
-    match begin_login_inner(req).await {
-        Ok(r) => r,
-        Err(e) => format!("Error creating Steam login redirect: {}", e)
-            .with_status(StatusCode::INTERNAL_SERVER_ERROR)
-            .into_response(),
-    }
-}
+// pub async fn begin_login(req: Request<AppState>) -> Response {
+//     match begin_login_inner(req).await {
+//         Ok(r) => r,
+//         Err(e) => format!("Error creating Steam login redirect: {}", e)
+//             .with_status(StatusCode::INTERNAL_SERVER_ERROR)
+//             .into_response(),
+//     }
+// }
 
 #[derive(Debug, Deserialize)]
 struct OpenIDResponse<'a> {
@@ -85,7 +94,7 @@ struct OpenIDResponse<'a> {
 }
 
 impl<'a> OpenIDResponse<'a> {
-    fn validate<State>(&self, req: &Request<State>) -> Result<u64> {
+    fn validate<State>(&self, req: &Request<State>) -> anyhow::Result<u64> {
         // See https://openid.net/specs/openid-authentication-2_0.html#verification
         // 11.1: Verifying the Return URL
         let expected_rt_url = format!("{}", return_to_url(req)?);
@@ -144,52 +153,59 @@ impl<'a> OpenIDResponse<'a> {
     }
 }
 
-async fn handle_redirect_inner(request: Request<AppState>) -> Result<impl IntoResponse> {
+pub async fn handle_redirect(request: Request<AppState>) -> tide::Result {
     let openid_response_str: &str = request.uri().query().unwrap_or("");
     let openid_response: OpenIDResponse = serde_qs::from_str(openid_response_str)
-        .map_err(|e| anyhow!("Failed to parse OpenID response from Steam: {}", e))?;
+        .map_err(|e| anyhow!("Failed to parse OpenID response from Steam: {}", e))
+        .tide_compat()?;
     debug!("Got Steam OpenID response: {:#?}", openid_response);
-    let steam_id = openid_response.validate(&request)?;
+    let steam_id = openid_response.validate(&request).tide_compat()?;
     let state = request.state();
     let mut db = &state.db_pool;
     let mut redis_conn = state
         .redis
         .get_async_connection()
         .await
-        .context("Creating redis connection after successful steam verification")?;
+        .context("Creating redis connection after successful steam verification")
+        .tide_compat()?;
     let user = User::steam_login(&mut db, steam_id)
         .await
-        .context("Creating Steam login after successful verification")?;
-    let new_session = Session::new_from_user_id(&mut db, user.id).await?;
-    let mut response = Response::new(307).set_header("Location", "/beta/");
+        .context("Creating Steam login after successful verification")
+        .tide_compat()?;
+    let new_session = Session::new_from_user_id(&mut db, user.id)
+        .await
+        .tide_compat()?;
+    let mut response =
+        Response::new(StatusCode::TemporaryRedirect).set_header(LOCATION.clone(), "/beta/");
     response
         .set_session(&mut redis_conn, new_session)
         .await
-        .context("Setting session after successful Steam login")?;
+        .context("Setting session after successful Steam login")
+        .tide_compat()?;
 
     Ok(response)
 }
 
-pub async fn handle_redirect(req: Request<AppState>) -> Response {
-    match handle_redirect_inner(req).await {
-        Ok(r) => r.into_response(),
-        Err(e) => format!("Error verifying login data with Steam: {}", e)
-            .with_status(StatusCode::INTERNAL_SERVER_ERROR)
-            .into_response(),
-    }
-}
+// pub async fn handle_redirect(req: Request<AppState>) -> Response {
+//     match handle_redirect_inner(req).await {
+//         Ok(r) => r.into_response(),
+//         Err(e) => format!("Error verifying login data with Steam: {}", e)
+//             .with_status(StatusCode::INTERNAL_SERVER_ERROR),
+//     }
+// }
 
-async fn logout_inner(_req: Request<AppState>) -> Result<impl IntoResponse> {
-    let mut response = Response::new(307).set_header("Location", "/beta/");
-    response.clear_session().await?;
+pub async fn logout(_req: Request<AppState>) -> tide::Result {
+    let mut response =
+        Response::new(StatusCode::TemporaryRedirect).set_header(LOCATION.clone(), "/beta/");
+    response.clear_session().await.tide_compat()?;
     Ok(response)
 }
 
-pub async fn logout(req: Request<AppState>) -> Response {
-    match logout_inner(req).await {
-        Ok(r) => r.into_response(),
-        Err(e) => format!("Error logging you out: {}", e)
-            .with_status(StatusCode::INTERNAL_SERVER_ERROR)
-            .into_response(),
-    }
-}
+// pub async fn logout(req: Request<AppState>) -> Response {
+//     match logout_inner(req).await {
+//         Ok(r) => r,
+//         Err(e) => format!("Error logging you out: {}", e)
+//             .with_status(StatusCode::INTERNAL_SERVER_ERROR)
+//             .into_response(),
+//     }
+// }

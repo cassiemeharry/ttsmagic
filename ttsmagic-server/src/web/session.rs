@@ -8,7 +8,7 @@ use tide::{Next, Request, Response};
 use ttsmagic_types::UserId;
 use uuid::Uuid;
 
-use crate::{user::User, web::AppState};
+use crate::{user::User, web::{AnyhowTideCompat, AppState}};
 
 #[derive(Clone, Debug)]
 pub struct Session {
@@ -180,10 +180,10 @@ impl<'a, DB: Executor<Database = Postgres> + Send, T: Send + Sync> SessionGetExt
 impl<'a> SessionGetExt<'static> for &'a tide::Request<AppState> {
     fn get_session(self) -> BoxFuture<'static, Option<Session>> {
         let state = self.state().clone();
-        let cookie_opt_opt = self.cookie(SESSION_COOKIE_NAME).ok();
+        let cookie_opt = self.cookie(SESSION_COOKIE_NAME);
         drop(self);
         Box::pin(async move {
-            let cookie = cookie_opt_opt??;
+            let cookie = cookie_opt?;
             let mut redis_conn = match state.redis.get_async_connection().await {
                 Ok(c) => c,
                 Err(e) => {
@@ -215,7 +215,7 @@ impl<'a> SessionGetExt<'static> for &'a tide::Request<AppState> {
     }
 }
 
-impl<'a> SessionSetExt<'a> for &'a mut tide::Response {
+impl<'a> SessionSetExt<'a> for &'a mut Response {
     fn set_session(
         self,
         redis: &'a mut redis::aio::Connection,
@@ -230,7 +230,7 @@ impl<'a> SessionSetExt<'a> for &'a mut tide::Response {
     }
 }
 
-impl<'a> SessionClearExt<'a> for &'a mut tide::Response {
+impl<'a> SessionClearExt<'a> for &'a mut Response {
     fn clear_session(self) -> BoxFuture<'a, Result<Self>> {
         Box::pin(async move {
             let cookie = Session::make_empty_cookie();
@@ -263,46 +263,49 @@ pub async fn from_cookie_header(
 // async fn from_cookies(raw_cookies: &[&str], redis: &redis::Client) -> Result<Option<Session>> {
 // }
 
-async fn middleware_inner<'a>(
-    req: Request<AppState>,
-    next: Next<'a, AppState>,
-) -> Result<Response> {
-    let fresh_session = Session {
-        session_id: Uuid::new_v4(),
-        user: None,
-    };
-    let session;
-    {
-        let cookie = req.cookie(SESSION_COOKIE_NAME);
-        let state = &req.state();
-        let redis_client = &state.redis;
-        let mut redis_conn = redis_client.get_async_connection().await?;
-        let db_pool = &state.db_pool;
-        let mut db = db_pool.acquire().await?;
-        match cookie {
-            Ok(None) => session = fresh_session,
-            Ok(Some(cookie)) => {
-                match Session::load_from_cache(&mut db, &mut redis_conn, cookie.value()).await? {
-                    Some(s) => session = s,
-                    None => session = fresh_session,
-                }
-            }
-            Err(e) => return Err(anyhow!("Failed to get cookie: {:?}", e)),
-        };
-        session.save_to_cache(&mut redis_conn).await?;
-    }
-    let resp = next.run(req).await;
-    Ok(resp)
+#[derive(Debug)]
+pub struct SessionMiddleware {
+    _priv: (),
 }
 
-pub fn middleware<'a>(req: Request<AppState>, next: Next<'a, AppState>) -> BoxFuture<'a, Response> {
-    Box::pin(async move {
-        match middleware_inner(req, next).await {
-            Ok(resp) => resp,
-            Err(e) => {
-                error!("Session middleware failed: {}", e);
-                Response::new(500)
-            }
+impl SessionMiddleware {
+    pub fn new() -> Self {
+        SessionMiddleware { _priv: (), }
+    }
+
+    async fn middleware_inner<'a>(
+        req: Request<AppState>,
+        next: Next<'a, AppState>,
+    ) -> tide::Result {
+        let mut session = Session {
+            session_id: Uuid::new_v4(),
+            user: None,
+        };
+        {
+            let cookie = req.cookie(SESSION_COOKIE_NAME);
+            let state = &req.state();
+            let redis_client = &state.redis;
+            let mut redis_conn = redis_client.get_async_connection().await?;
+            let db_pool = &state.db_pool;
+            let mut db = db_pool.acquire().await?;
+            if let Some(cookie) = cookie {
+                let sess_opt = Session::load_from_cache(&mut db, &mut redis_conn, cookie.value()).await
+                    .tide_compat()?;
+                if let Some(s) = sess_opt {
+                    session = s;
+                }
+            };
+            session.save_to_cache(&mut redis_conn).await.tide_compat()?;
         }
-    })
+        let resp = next.run(req).await?;
+        Ok(resp)
+    }
+}
+
+impl tide::Middleware<AppState> for SessionMiddleware {
+    fn handle<'a>(&'a self, cx: Request<AppState>, next: Next<'a, AppState>) -> BoxFuture<'a, tide::Result> {
+        Box::pin(async move {
+            Self::middleware_inner(cx, next).await
+        })
+    }
 }
