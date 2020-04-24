@@ -1,90 +1,11 @@
-[package]
-name = "ttsmagic"
-version = "0.1.0"
-authors = ["Cassie Meharry <cassie@prophetessof.tech>"]
-edition = "2018"
+[workspace]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+members = [
+    "ttsmagic-server",
+    "ttsmagic-types",
+    "ttsmagic-frontend",
+]
 
-[dependencies]
-anyhow = "1"
-# async-log = "2"
-async-trait = "0.1"
-chrono = "0.4"
-clap = "2"
-cookie = "*"
-csv = "1"
-failure = "0.1"
-# failure_derive = "0.1"
-futures = "0.3"
-http_0_1 = { version = "0.1", package = "http" }
-http_0_2 = { version = "0.2", package = "http" }
-http-client = "1"
-lazy_static = "1"
-log = "0.4"
-nonempty = "0.3"
-pbr = "1"
-pin-utils = "0.1.0-alpha.3"
-pretty_env_logger = "0.4"
-rand = "0.7"
-scraper = "0.11"
-serde_json = "1"
-serde_qs = "*"
-smallvec = "1"
-# steam-auth = "1"
-surf = "2.0.0-alpha.0"
-tempfile = "3"
-thiserror = "1"
-tide = "0.6"
-tungstenite = "0.10"
-url = "2"
-
-[dependencies.async-std]
-features = ["attributes"]
-version = "^1.5"
-
-[dependencies.image]
-default-features = false
-features = ["jpeg", "jpeg_rayon", "png"]
-version = "^0.23"
-
-[dependencies.async-std-tokio-compat]
-git = "https://github.com/jedisct1/rust-async-std-tokio-compat"
-rev = "53a6dd429c108626c3ea8e0bf066559a644af883"
-
-# [dependencies.openidconnect]
-# default-features = false
-# features = ["futures-03"]
-# version = "1.0.0-alpha"
-
-[dependencies.redis]
-default-features = false
-features = ["aio", "async-std-comp"]
-git = "https://github.com/mitsuhiko/redis-rs"
-rev = "1ea0bd0c2e7b450eb5279995142fd64e5db0fa69"
-
-[dependencies.rust-embed]
-features = ["compression", "interpolate-folder-path"]
-version = "5"
-
-[dependencies.sentry]
-default-features = false
-features = ["with_client_implementation", "with_curl_transport", "with_panic", "with_device_info", "with_rust_info"]
-version = "0.18"
-
-[dependencies.serde]
-features = ["derive"]
-version = "1"
-
-[dependencies.sqlx]
-default-features = false
-features = ["chrono", "postgres", "runtime-async-std", "uuid"]
-version = "0.2"
-
-[dependencies.async-tungstenite]
-features = ["async-std-runtime"]
-version = "*"
-
-[dependencies.uuid]
-features = ["v4"]
-version = "0.8"
+exclude = [
+  "ttsmagic-frontend/wasm",
+]

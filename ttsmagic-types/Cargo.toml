@@ -1,0 +1,17 @@
+[package]
+name = "ttsmagic-types"
+version = "0.1.0"
+authors = ["Cassie Meharry <cassie@prophetessof.tech>"]
+edition = "2018"
+
+[dependencies.serde]
+features = ["derive"]
+version = "1"
+
+[dependencies.url]
+features = ["serde"]
+version = "2"
+
+[dependencies.uuid]
+features = ["serde", "v4"]
+version = "0.8"

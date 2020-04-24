@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>MtG Tabletop Simulator Deck Builder</title>
+    <link rel="stylesheet" href="/beta/static/stylesheet.css">
+  </head>
+  <body>
+    <script type="module">
+import init from '/beta/static/ttsmagic_frontend.js';
+
+async function run() {
+  const wasm = await init();
+  wasm.run_app();
+}
+run();
+    </script>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "ttsmagic-frontend",
+  "collaborators": [
+    "Cassie Meharry <cassie@prophetessof.tech>"
+  ],
+  "version": "0.1.0",
+  "files": [
+    "ttsmagic_frontend_bg.wasm",
+    "ttsmagic_frontend.js"
+  ],
+  "module": "ttsmagic_frontend.js",
+  "sideEffects": false
+}
