@@ -120,13 +120,15 @@ impl Component for DeckList {
                 },
                 S2FMsg::Notification(s2f::Notification::DeckParsed {
                     deck_id,
-                    title: _,
-                    url: _,
+                    title,
+                    url,
                 }) => match &mut self.decks {
                     RemoteResource::Loaded(ref mut decks) => {
                         for di in decks.iter_mut() {
                             if &di.deck.id == deck_id {
                                 di.status = DeckStatus::Loading;
+                                di.deck.title = title.clone();
+                                di.deck.url = url.clone();
                             }
                         }
                         true
