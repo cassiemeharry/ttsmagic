@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use async_std::{path::PathBuf, prelude::*, sync::Arc};
 use sqlx::{Executor, PgPool, Postgres, Row};
-use ttsmagic_types::UserId;
+use ttsmagic_types::{DeckId, UserId};
 use url::Url;
+use uuid::Uuid;
 
 use crate::{scryfall::api::ScryfallApi, user::User};
 
@@ -142,6 +143,104 @@ pub async fn import_all(
 
     info!("Importing decks from old system...");
     import_decks(scryfall_api, db, redis, root, only_user).await?;
+
+    Ok(())
+}
+
+async fn cleanup_deck(
+    db: &mut PgPool,
+    deck_id: DeckId,
+    user_id: UserId,
+    title: String,
+    url: Url,
+) -> Result<()> {
+    info!(
+        "Cleaning up deck {} \"{}\" (user {}, URL {})",
+        deck_id, title, user_id, url
+    );
+    let loader = match crate::deck::find_loader::<PgPool, redis::aio::Connection>(url.clone()) {
+        Some(l) => l,
+        None => {
+            warn!(
+                "Failed to find loader for deck {} at URL {} (user: {})",
+                deck_id, url, user_id
+            );
+            return Ok(());
+        }
+    };
+    let canon_url = loader.canonical_deck_url();
+    if canon_url == url {
+        // This deck is fine.
+        return Ok(());
+    }
+    if canon_url != url {
+        info!(
+            "Deck {} has a bad URL:\n   previous: {}\n  canonical: {}",
+            deck_id, url, canon_url
+        );
+        // Check to see if there's a duplicate deck with the correct URL. If
+        // so, delete this one. Otherwise, fix the URL.
+        let exists_opt = sqlx::query("SELECT 1 FROM deck WHERE user_id = $1 AND url = $2;")
+            .bind(user_id.as_queryable())
+            .bind(format!("{}", canon_url))
+            .fetch_optional(db)
+            .await?;
+        match exists_opt {
+            Some(_) => {
+                info!("There's already a deck for this user with the correct URL, so deleting the incorrect one.");
+                sqlx::query("DELETE FROM deck WHERE id = $1;")
+                    .bind(deck_id.as_uuid())
+                    .execute(db)
+                    .await?
+            }
+            None => {
+                info!("Fixing the URL");
+                sqlx::query("UPDATE deck SET url = $1 WHERE id = $2;")
+                    .bind(format!("{}", canon_url))
+                    .bind(deck_id.as_uuid())
+                    .execute(db)
+                    .await?
+            }
+        };
+    }
+    Ok(())
+}
+
+pub async fn cleanup(db: &mut PgPool) -> Result<()> {
+    let decks_to_check;
+    {
+        let mut stream = sqlx::query(
+            "\
+SELECT id, user_id, title, url FROM deck
+ORDER BY user_id ASC, url ASC
+;",
+        )
+        .fetch(db);
+        let mut to_check = Vec::new();
+        while let Some(row_result) = stream.next().await {
+            let row = row_result.context("Getting list of decks to cleanup")?;
+            let user_id: u64 = row.get::<i64, _>("user_id") as u64;
+            let user_id = UserId::from(user_id);
+            let url_str: String = row.get("url");
+            let id: Uuid = row.get("id");
+            let id = DeckId(id);
+            let url = match Url::parse(&url_str) {
+                Ok(u) => u,
+                Err(e) => {
+                    error!("Failed to parse URL {:?} for deck {}: {}", url_str, id, e);
+                    continue;
+                }
+            };
+            let title: String = row.get("title");
+            to_check.push((id, user_id, title, url));
+        }
+        decks_to_check = to_check;
+    }
+    for (deck_id, user_id, title, url) in decks_to_check {
+        cleanup_deck(db, deck_id, user_id, title, url)
+            .await
+            .with_context(|| format!("Cleaning up deck {}", deck_id))?;
+    }
 
     Ok(())
 }

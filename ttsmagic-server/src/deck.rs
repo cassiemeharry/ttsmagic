@@ -479,7 +479,7 @@ where
 {
 }
 
-fn find_loader<DB: Executor<Database = Postgres>, R: AsyncCommands>(
+pub fn find_loader<DB: Executor<Database = Postgres>, R: AsyncCommands>(
     url: Url,
 ) -> Option<Box<dyn DeckParser<DB, R>>> {
     if let Some(l) = loaders::DeckboxLoader::match_url(&url) {

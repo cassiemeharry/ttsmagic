@@ -99,7 +99,7 @@ impl DeckMatcher for DeckboxLoader {
     fn match_url(url: &Url) -> Option<Self> {
         match (url.domain(), url.path_segments()) {
             (Some("deckbox.org"), Some(path_segments)) => {
-                let path_segments = path_segments.collect::<Vec<&str>>();
+                let path_segments = path_segments.take(2).collect::<Vec<&str>>();
                 match path_segments.as_slice() {
                     ["sets", raw_id] => {
                         let id = u32::from_str(raw_id).ok()?;
@@ -225,7 +225,6 @@ impl DeckMatcher for TappedOutLoader {
         match (url.domain(), url.path_segments()) {
             (Some("tappedout.net"), Some(path_segments)) => {
                 let path_segments = path_segments.take(2).collect::<Vec<&str>>();
-                debug!("Found a tappedout URL, path segments: {:?}", path_segments);
                 let slug = match path_segments.as_slice() {
                     ["mtg-decks", slug] => slug.to_string(),
                     _ => return None,

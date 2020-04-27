@@ -131,6 +131,9 @@ async fn main() -> Result<()> {
             importer::import_all(scryfall_api, &mut db_pool, &mut redis_conn, root, user_id)
                 .await?;
         }
+        ("cleanup", _) => {
+            importer::cleanup(&mut db_pool).await?;
+        }
         ("load-scryfall-bulk", Some(load_opts)) => {
             let force = load_opts.is_present("force");
             let mut conn = db_pool.acquire().await?;
@@ -400,6 +403,10 @@ fn get_args<'a>(current_dir: &'a std::path::Path) -> clap::ArgMatches<'a> {
                         .takes_value(true)
                         .help("Only import decks for this user ID"),
                 ),
+        )
+        .subcommand(
+            SubCommand::with_name("cleanup")
+                .about("Cleanup URLs and duplication issues")
         )
         .subcommand(
             SubCommand::with_name("load-scryfall-bulk")
