@@ -1,7 +1,8 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use cookie::Cookie;
 use futures::future::BoxFuture;
 use redis::AsyncCommands;
+use ring::hmac;
 use sqlx::{Executor, Postgres};
 use std::str::FromStr;
 use tide::{Next, Request, Response};
@@ -9,6 +10,7 @@ use ttsmagic_types::UserId;
 use uuid::Uuid;
 
 use crate::{
+    secrets::SESSION_PRIVATE_KEY,
     user::User,
     web::{AnyhowTideCompat, AppState},
 };
@@ -56,25 +58,56 @@ impl Session {
         format!("ttsmagic-sessions:{}", self.session_id)
     }
 
+    fn verify_session_id_signature(signed_cookie_value: &[u8]) -> Result<Uuid> {
+        // Example UUID: d12cf21a-e09c-41d5-92bb-9a0cefbd04f4
+        ensure!(
+            signed_cookie_value.len() == (36 + 1 + 64),
+            "Invalid cookie format: expected \"$UUID:$signature\", found len {:?}",
+            signed_cookie_value.len()
+        );
+        let session_id_bytes: &[u8] = &signed_cookie_value[0..36];
+        let session_id_str = std::str::from_utf8(session_id_bytes)?;
+        let session_id: Uuid = session_id_str.parse()?;
+        let sep_byte: u8 = signed_cookie_value[36];
+        ensure!(
+            sep_byte == (':' as u8),
+            "Invalid cookie format: expected \"$UUID:$signature\", found separator byte {:?}, expected {:?}",
+            sep_byte, ':' as u8,
+        );
+        let sig_from_cookie_hex: &[u8] = &signed_cookie_value[37..];
+        let sig_from_cookie = hex::decode(sig_from_cookie_hex)?;
+        ensure!(
+            sig_from_cookie.len() == (256 / 8),
+            "signature has invalid length"
+        );
+
+        let algo = hmac::HMAC_SHA256;
+        let key = hmac::Key::new(algo, SESSION_PRIVATE_KEY.as_ref());
+        hmac::verify(&key, session_id_bytes, &sig_from_cookie)
+            .map_err(|_| anyhow!("Signature verification failed"))?;
+        Ok(session_id)
+    }
+
+    fn signed_session_id(&self) -> String {
+        let session_id_str = self.session_id.to_string();
+        let session_id_bytes: &[u8] = session_id_str.as_bytes();
+        let algo = hmac::HMAC_SHA256;
+        let key = hmac::Key::new(algo, SESSION_PRIVATE_KEY.as_ref());
+        let signature = hmac::sign(&key, session_id_bytes);
+        let encoded_sig = hex::encode(signature);
+        format!("{}:{}", session_id_str, encoded_sig)
+    }
+
     async fn load_from_cache(
         db: &mut impl Executor<Database = Postgres>,
         redis: &mut redis::aio::Connection,
-        session_id: &str,
+        signed_cookie_value: &str,
     ) -> Result<Option<Self>> {
-        if session_id == "" {
+        if signed_cookie_value.is_empty() {
             return Ok(None);
         }
 
-        let session_id = match Uuid::from_str(session_id) {
-            Ok(sid) => sid,
-            Err(e) => {
-                error!(
-                    "Failed to parse session ID string {:?} as UUID: {}",
-                    session_id, e,
-                );
-                return Ok(None);
-            }
-        };
+        let session_id = Self::verify_session_id_signature(signed_cookie_value.as_bytes())?;
         let session = Session {
             session_id,
             user: None,
@@ -103,8 +136,8 @@ impl Session {
         Ok(())
     }
 
-    fn make_cookie_inner(session_id: String) -> Cookie<'static> {
-        Cookie::build(SESSION_COOKIE_NAME, session_id)
+    fn make_cookie_inner(signed_session_id: String) -> Cookie<'static> {
+        Cookie::build(SESSION_COOKIE_NAME, signed_session_id)
             .path("/")
             // .secure(true)
             .http_only(true)
@@ -117,13 +150,23 @@ impl Session {
     }
 
     pub fn make_cookie(&self) -> Cookie<'static> {
-        Cookie::build(SESSION_COOKIE_NAME, self.session_id.to_string())
-            .path("/")
-            // .secure(true)
-            .http_only(true)
-            .max_age(chrono::Duration::days(7))
-            .finish()
+        let signed = self.signed_session_id();
+        Self::make_cookie_inner(signed)
     }
+}
+
+#[test]
+fn test_cookie_sig_roundtrip() {
+    let session = Session {
+        session_id: Uuid::new_v4(),
+        user: None,
+    };
+    println!("session: {:?}", session);
+    let cookie = session.make_cookie();
+    println!("Got cookie: {}", cookie);
+    let session_id = Session::verify_session_id_signature(cookie.value().as_bytes()).unwrap();
+    println!("parsed session_id: {:?}", session_id);
+    assert_eq!(session.session_id, session_id);
 }
 
 pub trait SessionGetExt<'a> {
@@ -225,9 +268,11 @@ pub async fn from_cookie_header(
         }
         let cookie = cookie::Cookie::parse(cookie_str)
             .with_context(|| format!("Parsing cookie header {:?}", header_value))?;
-        let session_opt = Session::load_from_cache(db, redis, cookie.value())
+        let cookie_value: std::borrow::Cow<str> =
+            percent_encoding::percent_decode(cookie.value().as_bytes()).decode_utf8()?;
+        let session_opt = Session::load_from_cache(db, redis, &cookie_value)
             .await
-            .with_context(|| format!("Loading from cache based on cookie {:?}", cookie))?;
+            .with_context(|| format!("Loading from cache based on cookie {:?}", &cookie_value))?;
         return Ok(session_opt);
     }
     Ok(None)
@@ -273,7 +318,7 @@ impl SessionMiddleware {
             for hv in cookie_header_values {
                 match from_cookie_header(&mut db, &mut redis_conn, hv.as_str()).await {
                     Ok(s) => cookie_session = s,
-                    Err(e) => error!("Failed to parse cookie header {:?}: {}", hv.as_str(), e),
+                    Err(e) => error!("Failed to parse cookie header {:?}: {:?}", hv.as_str(), e),
                 }
             }
             if let Some(s) = cookie_session {

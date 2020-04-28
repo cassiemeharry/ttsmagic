@@ -1,4 +1,5 @@
 #![deny(warnings)]
+#![allow(unused_braces)] // bug in rustdoc: https://github.com/rust-lang/rust/issues/70814
 
 #[macro_use]
 extern crate log;
