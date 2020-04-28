@@ -21,6 +21,7 @@ hex = "0.4"
 http_0_1 = { version = "0.1", package = "http" }
 http_0_2 = { version = "0.2", package = "http" }
 http-client = "1"
+humantime = "1"
 lazy_static = "1"
 log = "0.4"
 nonempty = "0.3"

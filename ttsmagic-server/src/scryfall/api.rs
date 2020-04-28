@@ -9,7 +9,6 @@ use async_std::{
 use chrono::prelude::*;
 use image::RgbImage;
 use serde::Deserialize;
-use serde_json::Value;
 
 use super::ScryfallId;
 use crate::files::MediaFile;
@@ -227,7 +226,7 @@ impl ScryfallApi {
         Err(last_error.unwrap())
     }
 
-    pub async fn get_bulk_data(&self, file: &str) -> Result<Value> {
+    pub async fn get_bulk_data(&self, file: &str) -> Result<impl async_std::io::Read> {
         const BULK_URL: &'static str = "https://api.scryfall.com/bulk-data";
 
         let mut response = self.get(BULK_URL).await?;
@@ -256,9 +255,8 @@ impl ScryfallApi {
             debug!("Looking at listing file {}", item.type_);
             if item.type_ == file {
                 info!("Downloading bulk file {}", item.permalink_uri);
-                let mut response = self.get(item.permalink_uri).await?;
-                let bulk_json = response.body_json().await?;
-                return Ok(bulk_json);
+                let response = self.get(item.permalink_uri).await?;
+                return Ok(response);
             }
         }
         Err(anyhow!("Didn't find file {} among bulk downloads", file))

@@ -1,11 +1,9 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context as _, Result};
 use async_std::{path::Path, prelude::*};
 use chrono::prelude::*;
 use image::RgbImage;
 use nonempty::NonEmpty;
-use pbr::PbIter;
 use serde_json::Value;
-// use smallvec::SmallVec;
 use sqlx::{postgres::PgRow, Executor, Postgres, Row};
 use std::{
     collections::{HashMap, HashSet},
@@ -214,37 +212,6 @@ RETURNING updated_at
         }
     }
 
-    // pub fn legal_in(&self, format: &str) -> Result<bool> {
-    //     let legalities = self
-    //         .json
-    //         .get("legalities")
-    //         .ok_or_else(|| anyhow!("Card JSON missing \"legalities\" field"))?;
-    //     let legal_or_not = legalities
-    //         .get(format)
-    //         .ok_or_else(|| anyhow!("Unknown legality for format {:?}", format))?
-    //         .as_str()
-    //         .ok_or_else(|| anyhow!("Card legality for format {:?} is not a string", format))?;
-    //     match legal_or_not {
-    //         "legal" => Ok(true),
-    //         "not_legal" => Ok(false),
-    //         other => Err(anyhow!(
-    //             "Found unexpected legality ruling {:?} for format {:?}",
-    //             other,
-    //             format
-    //         )),
-    //     }
-    // }
-
-    // pub fn image_url(&self, format: &str) -> Result<&str> {
-    //     self.json
-    //         .get("image_uris")
-    //         .ok_or_else(|| anyhow!("Card JSON missing \"image_uris\" field"))?
-    //         .get(format)
-    //         .ok_or_else(|| anyhow!("Card JSON \"image_uris\" missing format {:?}", format))?
-    //         .as_str()
-    //         .ok_or_else(|| anyhow!("Card JSON \"image_uris\".{:?} is not a string", format))
-    // }
-
     pub async fn ensure_image<P: AsRef<Path>>(
         &self,
         root: P,
@@ -276,23 +243,6 @@ RETURNING updated_at
             .ok_or_else(|| anyhow!("Card JSON \"mana_cost\" field was not a string"))
     }
 
-    // pub fn color_identity(&self) -> Result<HashSet<&str>> {
-    //     let color_values = self
-    //         .json
-    //         .get("color_identity")
-    //         .ok_or_else(|| anyhow!("Card JSON missing \"color_identity\" field"))?
-    //         .as_array()
-    //         .ok_or_else(|| anyhow!("Card JSON \"color_identity\" field was not an array"))?;
-    //     let mut colors = HashSet::with_capacity(color_values.len());
-    //     for cv in color_values {
-    //         let color = cv
-    //             .as_str()
-    //             .ok_or_else(|| anyhow!("Color identity value {:?} was not a string", cv))?;
-    //         colors.insert(color);
-    //     }
-    //     Ok(colors)
-    // }
-
     pub fn type_line(&self) -> Result<&str> {
         self.json
             .get("type_line")
@@ -301,45 +251,6 @@ RETURNING updated_at
             .ok_or_else(|| anyhow!("Card JSON \"type_line\" field was not a string"))
     }
 
-    // pub fn types(&self) -> Result<SmallVec<[&str; 4]>> {
-    //     let mut types = SmallVec::new();
-    //     let type_line = self.type_line()?;
-    //     for card_type in type_line.split_whitespace() {
-    //         if card_type == "—" {
-    //             break;
-    //         }
-    //         types.push(card_type);
-    //     }
-    //     Ok(types)
-    // }
-
-    // pub fn basic_land_type(&self) -> Option<BasicLandType> {
-    //     match self.type_line().ok()? {
-    //         "Basic Land — Forest" => Some(BasicLandType::Forest),
-    //         "Basic Land — Island" => Some(BasicLandType::Island),
-    //         "Basic Land — Mountain" => Some(BasicLandType::Mountain),
-    //         "Basic Land — Plains" => Some(BasicLandType::Plains),
-    //         "Basic Land — Swamp" => Some(BasicLandType::Swamp),
-    //         _ => None,
-    //     }
-    // }
-
-    // pub fn subtypes(&self) -> Result<SmallVec<[&str; 4]>> {
-    //     let mut subtypes = SmallVec::new();
-    //     let type_line = self.type_line()?;
-    //     let mut seen_dash = false;
-    //     for card_type in type_line.split_whitespace() {
-    //         if card_type == "—" {
-    //             seen_dash = true;
-    //             continue;
-    //         }
-    //         if seen_dash {
-    //             subtypes.push(card_type);
-    //         }
-    //     }
-    //     Ok(subtypes)
-    // }
-
     pub fn oracle_text(&self) -> Result<&str> {
         self.json
             .get("oracle_text")
@@ -347,59 +258,7 @@ RETURNING updated_at
             .as_str()
             .ok_or_else(|| anyhow!("Card JSON \"oracle_text\" field is not a string"))
     }
-
-    // pub fn can_be_a_commander(&self) -> Result<bool> {
-    //     let types = self.types()?;
-    //     let legendary_creature = types.contains(&"Legendary") && types.contains(&"Creature");
-    //     let oracle_text = self.oracle_text().unwrap_or("");
-    //     let explicitly_allowed = self
-    //         .names()
-    //         .iter()
-    //         .any(|n| oracle_text.contains(&format!("{} can be your commander", n)));
-    //     Ok(legendary_creature || explicitly_allowed)
-    // }
 }
-
-// #[inline]
-// async fn ensure<F, T, G, U, H, V>(
-//     cache_duration: Duration,
-//     get_card: F,
-//     api_lookup: G,
-//     upsert: H,
-// ) -> Result<ScryfallCard>
-// where
-//     F: FnOnce() -> T,
-//     T: Future<Output = Result<Option<ScryfallCard>>>,
-//     G: FnOnce() -> U,
-//     U: Future<Output = Result<Vec<Value>>>,
-//     H: FnOnce(ScryfallId, Value, DateTime<Utc>) -> V,
-//     V: Future<Output = Result<()>>,
-// {
-//     let now = Utc::now();
-//     let orig_card_opt = get_card()
-//         .await
-//         .context(format!("Looking up card in ensure before network"))?;
-//     if let Some(c) = orig_card_opt {
-//         let threshold = now - cache_duration;
-//         if c.updated_at > threshold {
-//             return Ok(c);
-//         }
-//     }
-
-//     let card_json = api_lookup().await?;
-//     let raw_id = card_json
-//         .get("id")
-//         .ok_or_else(|| anyhow!("JSON response from Scryfall is missing \"id\" field"))?
-//         .as_str()
-//         .ok_or_else(|| anyhow!("JSON reponse from Scryfall's \"id\" field was not a string"))?;
-//     let id = ScryfallId::from_str(raw_id)?;
-//     let card = ScryfallCard {
-//         json: card_json.clone(),
-//         updated_at: now,
-//     };
-//     upsert(id, card_json, now).await?;
-//     Ok(card)
-// }
 
 pub async fn card_by_id(
     db: &mut impl Executor<Database = Postgres>,
@@ -428,60 +287,6 @@ WHERE
     }
 }
 
-// #[derive(Copy, Clone, Debug)]
-// pub enum BasicLandType {
-//     Forest,
-//     Island,
-//     Mountain,
-//     Plains,
-//     Swamp,
-// }
-
-// impl BasicLandType {
-//     fn oracle_id(self) -> Uuid {
-//         match self {
-//             Self::Forest => Uuid::from_u128(0xb34bb2dc_c1af_4d77_b0b3_a0fb342a5fc6),
-//             Self::Island => Uuid::from_u128(0xb2c6aa39_2d2a_459c_a555_fb48ba993373),
-//             Self::Mountain => Uuid::from_u128(0xa3fb7228_e76b_4e96_a40e_20b5fed75685),
-//             Self::Plains => Uuid::from_u128(0xbc71ebf6_2056_41f7_be35_b2e5c34afa99),
-//             Self::Swamp => Uuid::from_u128(0x56719f6a_1a6c_4c0a_8d21_18f7d7350b68),
-//         }
-//     }
-// }
-
-// pub async fn full_faced_lands<DB>(
-//     db: &mut DB,
-//     basic_land_type: BasicLandType,
-// ) -> Result<Vec<ScryfallCard>>
-// where
-//     DB: Executor<Database = Postgres>,
-// {
-//     let oracle_id = basic_land_type.oracle_id();
-//     debug!(
-//         "Checking database for cards with Scryfall oracle ID {}",
-//         oracle_id
-//     );
-//     let raw_cards: Vec<ScryfallCardRow> = sqlx::query_as(
-//         "\
-// SELECT json::text, updated_at FROM scryfall_card
-// WHERE
-//     (json ->> 'oracle_id')::uuid = $1
-// AND (json ->> 'full_art')::boolean = true
-// AND (json ->> 'set_type') != 'funny'
-// AND (json ->> 'lang') = 'en'
-// ;",
-//     )
-//     .bind(oracle_id)
-//     .fetch_all(db)
-//     .await?;
-//     let mut cards = Vec::with_capacity(raw_cards.len());
-//     for raw_card in raw_cards {
-//         let card = ScryfallCard::try_from(raw_card)?;
-//         cards.push(card);
-//     }
-//     Ok(cards)
-// }
-
 pub async fn oracle_id_by_name(
     db: &mut impl Executor<Database = Postgres>,
     name: &str,
@@ -509,128 +314,13 @@ LIMIT 1
     Ok(ScryfallOracleId(oracle_id))
 }
 
-// pub async fn lookup_card(
-//     db: &mut impl Executor<Database = Postgres>,
-//     id: ScryfallId,
-// ) -> Result<Option<ScryfallCard>> {
-//     card_by_id(db, id).await
-// }
-
-// const CARD_CACHE_DAYS: i64 = 14;
-
-// pub async fn ensure_card(
-//     api: &ScryfallApi,
-//     db: &mut impl Executor<Database = Postgres>,
-//     id: ScryfallId,
-// ) -> Result<ScryfallCard> {
-//     use std::cell::Cell;
-//     use std::rc::Rc;
-
-//     let db_lookup = Rc::new(Cell::new(Some(db)));
-//     let db_upsert = Rc::clone(&db_lookup);
-//     ensure(
-//         Duration::days(CARD_CACHE_DAYS),
-//         || {
-//             async {
-//                 let db: &mut _ = db_lookup.replace(None).unwrap();
-//                 let row_opt = card_by_id(db, id).await?;
-//                 db_lookup.replace(Some(db));
-//                 Ok(row_opt)
-//             }
-//         },
-//         move || {
-//             async move {
-//                 let c = api.lookup_by_id(id).await?;
-//                 Ok(vec![c])
-//             }
-//         },
-//         |id, card_json, updated_at| {
-//             async move {
-//                 const UPSERT_QUERY: &'static str = "\
-// INSERT INTO scryfall_card ( json, updated_at )
-// VALUES ( $1::jsonb, $2 )
-//     ON CONFLICT (( json ->> 'id' )) DO UPDATE
-//     SET json = $1::jsonb, updated_at = $2;
-// ";
-//                 info!("Upserting card Scryfall ID {} to the DB", id);
-//                 let db: &mut _ = db_upsert.replace(None).unwrap();
-//                 sqlx::query(UPSERT_QUERY)
-//                     .bind(serde_json::to_string(&card_json)?)
-//                     .bind(updated_at)
-//                     .execute(db)
-//                     .await?;
-//                 db_upsert.replace(Some(db));
-//                 Ok(())
-//             }
-//         },
-//     )
-//     .await
-// }
-
-// pub async fn lookup_card_by_name(
-//     db: &mut impl Executor<Database = Postgres>,
-//     name: &str,
-// ) -> Result<Option<ScryfallCard>> {
-//     card_by_name(db, name).await
-// }
-
-// pub async fn ensure_oracle_id_by_name(
-//     api: &ScryfallApi,
-//     db: &mut impl Executor<Database = Postgres>,
-//     name: &str,
-// ) -> Result<ScryfallOracleId> {
-//     use std::cell::Cell;
-//     use std::rc::Rc;
-
-//     let db_lookup = Rc::new(Cell::new(Some(db)));
-//     let db_upsert = Rc::clone(&db_lookup);
-//     let card = ensure(
-//         Duration::days(CARD_CACHE_DAYS),
-//         || {
-//             async {
-//                 let db: &mut _ = db_lookup.replace(None).unwrap();
-//                 let row_opt = oracle_id_by_name(db, name).await?;
-//                 db_lookup.replace(Some(db));
-//                 Ok(row_opt)
-//             }
-//         },
-//         move || {
-//             async move {
-//                 let cs = api.lookup_by_name(name).await?;
-//                 Ok(cs)
-//             }
-//         },
-//         |id, card_json, updated_at| {
-//             async move {
-//                 const UPSERT_QUERY: &'static str = "\
-// INSERT INTO scryfall_card ( json, updated_at )
-// VALUES ( $1::jsonb, $2 )
-//     ON CONFLICT (( json ->> 'id' )) DO UPDATE
-//     SET json = $1::jsonb, updated_at = $2;
-// ";
-//                 info!("Upserting card Scryfall ID {} to the DB", id);
-//                 let db: &mut _ = db_upsert.replace(None).unwrap();
-//                 sqlx::query(UPSERT_QUERY)
-//                     .bind(serde_json::to_string(&card_json)?)
-//                     .bind(updated_at)
-//                     .execute(db)
-//                     .await?;
-//                 db_upsert.replace(Some(db));
-//                 Ok(())
-//             }
-//         },
-//     )
-//     .await?;
-//     card.oracle_id()
-// }
-
 pub async fn load_bulk<P: AsRef<Path>>(
     api: &ScryfallApi,
     db: &mut impl Executor<Database = Postgres>,
     root: P,
     force: bool,
 ) -> Result<()> {
-    use async_std::{fs, prelude::*};
+    use async_std::fs;
     let bulk_dir = root.as_ref().join("files").join("bulk");
     fs::create_dir_all(&bulk_dir).await?;
     let cards_filename = bulk_dir.join("default_cards.json");
@@ -653,34 +343,127 @@ pub async fn load_bulk<P: AsRef<Path>>(
     } else {
         false
     };
-    let value = if download {
+    if download {
         debug!(
             "Cached file {} is out of date or non-existent, downloading fresh",
             cards_filename.to_string_lossy()
         );
-        let value = api.get_bulk_data("default_cards").await?;
-        let mut f = fs::File::create(&cards_filename).await?;
-        let bytes = serde_json::to_vec(&value)?;
-        f.write_all(bytes.as_slice()).await?;
-        value
-    } else {
-        debug!("Using cached file {}", cards_filename.to_string_lossy());
-        let mut f = fs::File::open(&cards_filename).await?;
-        let mut bytes = Vec::new();
-        f.read_to_end(&mut bytes).await?;
-        serde_json::from_slice(bytes.as_slice())?
-    };
-
-    let cards = value
-        .as_array()
-        .ok_or_else(|| anyhow!("default_cards.json is not an array"))?;
-    info!(
-        "Saving {} cards from Scryfall into database...",
-        cards.len()
-    );
-    for card in PbIter::new(cards.into_iter()) {
-        ScryfallCard::save_from_json(db, card.clone()).await?;
+        let bulk_file = api.get_bulk_data("default_cards").await?;
+        let file = fs::File::create(&cards_filename).await?;
+        async_std::io::copy(bulk_file, file).await?;
+        debug!("Saved to cached file");
     }
+
+    debug!("Loading cached file {}", cards_filename.to_string_lossy());
+
+    struct ParseIter<'a> {
+        pbar: pbr::ProgressBar<std::io::Stdout>,
+        cursor: std::io::Cursor<&'a [u8]>,
+        len: u64,
+        message: String,
+    }
+    impl<'a> ParseIter<'a> {
+        fn new(bytes: &'a [u8]) -> Self {
+            let len = bytes.len() as u64;
+            let mut pbar = pbr::ProgressBar::new(len);
+            pbar.set_units(pbr::Units::Bytes);
+            pbar.set_max_refresh_rate(Some(std::time::Duration::from_millis(50)));
+            let cursor = std::io::Cursor::new(bytes);
+            let message = String::with_capacity(100);
+            Self {
+                pbar,
+                cursor,
+                len,
+                message,
+            }
+        }
+    }
+
+    impl<'a> Iterator for ParseIter<'a> {
+        type Item = Result<Value>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            use serde::Deserialize;
+            use std::io::Seek;
+
+            macro_rules! some_error {
+                ($result:expr) => {
+                    match $result {
+                        Ok(x) => x,
+                        Err(e) => return Some(Err(e.into())),
+                    }
+                };
+            };
+
+            let position = some_error!(self.cursor.seek(std::io::SeekFrom::Current(1)));
+            if (position + 1) >= self.len {
+                debug!(
+                    "ParseIter position: {:?}, self.len: {:?}",
+                    position, self.len
+                );
+                return None;
+            }
+
+            let mut deserializer = serde_json::Deserializer::from_reader(&mut self.cursor);
+            let value = some_error!(serde_json::Value::deserialize(&mut deserializer));
+            self.pbar.set(self.cursor.position());
+            let released_at = value
+                .get("released_at")
+                .and_then(Value::as_str)
+                .unwrap_or("????-??-??");
+            let set_code = value.get("set").and_then(Value::as_str).unwrap_or("???");
+            let mut set_name = value
+                .get("set_name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unknown set>");
+            if set_name.len() > 30 {
+                set_name = &set_name[0..30];
+            }
+            let mut name = value
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("<unknown card>");
+            if name.len() > 30 {
+                name = &name[0..30];
+            }
+            self.message.clear();
+            {
+                use std::fmt::Write;
+                some_error!(write!(
+                    &mut self.message,
+                    "Loading {:>10} [{:>4}] {:<30} | {:<30} ",
+                    released_at, set_code, set_name, name,
+                ));
+            }
+            self.pbar.message(&self.message);
+            Some(Ok(value))
+        }
+    }
+
+    let mut file = fs::File::open(&cards_filename).await?;
+    let expected_file_len = match file.metadata().await {
+        Ok(m) => m.len() as usize,
+        Err(_) => 10_000,
+    };
+    let mut bytes = Vec::with_capacity(expected_file_len);
+    file.read_to_end(&mut bytes).await?;
+    assert!(bytes.len() > 0, "Failed to fill bytes in load_bulk!");
+
+    let start = std::time::Instant::now();
+    let cards_iter = ParseIter::new(bytes.as_slice());
+    info!("Saving cards from Scryfall into database...");
+    let mut total: usize = 0;
+    for card_result in pbr::PbIter::new(cards_iter) {
+        let card = card_result.context("Loading cards from Scryfall bulk data")?;
+        total += 1;
+        ScryfallCard::save_from_json(db, card).await?;
+    }
+    let end = std::time::Instant::now();
+    let std_delta = end - start;
+    let trimmed_delta = std::time::Duration::from_secs(std_delta.as_secs());
+    let delta = humantime::Duration::from(trimmed_delta);
+    info!("Finished, saved {} cards in {}", total, delta);
+
     Ok(())
 }
 
@@ -709,16 +492,6 @@ ORDER BY
         let row = row_result?;
         rows.push(row);
     }
-    // let rows: Vec<ScryfallCardRow> = futures::future::FutureExt::map(
-    //     rows_stream.collect(),
-    //     |rows_result: Vec<Result<ScryfallCardRow, sqlx::Error>>| {
-    //         rows_result
-    //             .into_iter()
-    //             .collect::<Result<Vec<ScryfallCardRow>, sqlx::Error>>()
-    //     },
-    // )
-    // .await?;
-    // let rows = rows_result.into_iter().collect::<Result<Vec<_>, _>>()?;
     let mut by_key: HashMap<(bool, bool), Vec<ScryfallCard>> = HashMap::new();
     for row in rows {
         match ScryfallCard::try_from(row) {
@@ -890,9 +663,6 @@ WHERE ((json ->> 'oracle_id')::uuid) = ANY ({})
         let row = row_result?;
         let color: String = row.get("color");
         assert_eq!(color.len(), 1, "bad color string from DB: {:?}", color);
-        // let color = row.get("color");
-        // if color.starts_with("\u{1}\"") {
-        // }
         colors.insert(color);
     }
     Ok(colors)
