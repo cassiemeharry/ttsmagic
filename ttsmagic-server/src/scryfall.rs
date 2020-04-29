@@ -357,24 +357,38 @@ pub async fn load_bulk<P: AsRef<Path>>(
     debug!("Loading cached file {}", cards_filename.to_string_lossy());
 
     struct ParseIter<'a> {
-        pbar: pbr::ProgressBar<std::io::Stdout>,
+        pbar_bytes: pbr::ProgressBar<pbr::Pipe>,
+        pbar_cards: pbr::ProgressBar<pbr::Pipe>,
         cursor: std::io::Cursor<&'a [u8]>,
         len: u64,
-        message: String,
+        seen_cards: u64,
+        message_buffer: String,
+        set_code_buffer: String,
     }
     impl<'a> ParseIter<'a> {
         fn new(bytes: &'a [u8]) -> Self {
             let len = bytes.len() as u64;
-            let mut pbar = pbr::ProgressBar::new(len);
-            pbar.set_units(pbr::Units::Bytes);
-            pbar.set_max_refresh_rate(Some(std::time::Duration::from_millis(50)));
+            let mut pbar_multi = pbr::MultiBar::new();
+            let mut pbar_bytes = pbar_multi.create_bar(len);
+            pbar_bytes.set_units(pbr::Units::Bytes);
+            pbar_bytes.set_max_refresh_rate(Some(std::time::Duration::from_millis(100)));
+            let mut pbar_cards = pbar_multi.create_bar(50_000);
+            pbar_cards.set_max_refresh_rate(Some(std::time::Duration::from_millis(100)));
+            pbar_cards.format(".....");
+            pbar_cards.show_percent = false;
+            pbar_cards.show_time_left = false;
             let cursor = std::io::Cursor::new(bytes);
-            let message = String::with_capacity(100);
+            std::thread::spawn(move || {
+                pbar_multi.listen();
+            });
             Self {
-                pbar,
+                pbar_bytes,
+                pbar_cards,
                 cursor,
                 len,
-                message,
+                seen_cards: 0,
+                message_buffer: String::with_capacity(100),
+                set_code_buffer: String::with_capacity(7),
             }
         }
     }
@@ -397,16 +411,15 @@ pub async fn load_bulk<P: AsRef<Path>>(
 
             let position = some_error!(self.cursor.seek(std::io::SeekFrom::Current(1)));
             if (position + 1) >= self.len {
-                debug!(
-                    "ParseIter position: {:?}, self.len: {:?}",
-                    position, self.len
-                );
+                self.pbar_cards.total = self.seen_cards;
+                self.pbar_cards.finish();
+                self.pbar_bytes.finish();
                 return None;
             }
 
             let mut deserializer = serde_json::Deserializer::from_reader(&mut self.cursor);
             let value = some_error!(serde_json::Value::deserialize(&mut deserializer));
-            self.pbar.set(self.cursor.position());
+            self.pbar_bytes.set(self.cursor.position());
             let released_at = value
                 .get("released_at")
                 .and_then(Value::as_str)
@@ -426,16 +439,23 @@ pub async fn load_bulk<P: AsRef<Path>>(
             if name.len() > 30 {
                 name = &name[0..30];
             }
-            self.message.clear();
+            self.message_buffer.clear();
+            self.set_code_buffer.clear();
             {
                 use std::fmt::Write;
+                some_error!(write!(&mut self.set_code_buffer, "[{}]", set_code));
                 some_error!(write!(
-                    &mut self.message,
-                    "Loading {:>10} [{:>4}] {:<30} | {:<30} ",
-                    released_at, set_code, set_name, name,
+                    &mut self.message_buffer,
+                    "{:>10} {:>7} {:<30} | {:<30} ",
+                    released_at, self.set_code_buffer, set_name, name,
                 ));
             }
-            self.pbar.message(&self.message);
+            self.seen_cards += 1;
+            if self.seen_cards > self.pbar_cards.total {
+                self.pbar_cards.total += self.seen_cards;
+            }
+            self.pbar_cards.message(&self.message_buffer);
+            self.pbar_cards.inc();
             Some(Ok(value))
         }
     }
@@ -452,17 +472,15 @@ pub async fn load_bulk<P: AsRef<Path>>(
     let start = std::time::Instant::now();
     let cards_iter = ParseIter::new(bytes.as_slice());
     info!("Saving cards from Scryfall into database...");
-    let mut total: usize = 0;
     for card_result in pbr::PbIter::new(cards_iter) {
         let card = card_result.context("Loading cards from Scryfall bulk data")?;
-        total += 1;
         ScryfallCard::save_from_json(db, card).await?;
     }
     let end = std::time::Instant::now();
     let std_delta = end - start;
     let trimmed_delta = std::time::Duration::from_secs(std_delta.as_secs());
     let delta = humantime::Duration::from(trimmed_delta);
-    info!("Finished, saved {} cards in {}", total, delta);
+    info!("Loading took {}", delta);
 
     Ok(())
 }
