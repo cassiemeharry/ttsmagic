@@ -26,4 +26,6 @@ in naersk.buildPackage {
   inherit src;
   remapPathPrefix = true;
   buildInputs = [ pkgs.cacert pkgs.pkg-config pkgs.openssl ];
+  cargoBuildOptions = orig:
+    [ "--package" "ttsmagic-server" ] ++ orig;
 }

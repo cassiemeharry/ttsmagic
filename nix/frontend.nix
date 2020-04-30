@@ -62,6 +62,7 @@ let
     compressTarget = false;
     copyBins = false;
     copyTarget = true;
+    dontFixup = true;
     remapPathPrefix = false;
   };
 in pkgs.stdenv.mkDerivation {
