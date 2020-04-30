@@ -23,6 +23,10 @@ run:
 > nix-build nix/ttsmagic.nix
 > result/bin/ttsmagic-server
 
+check-deps:
+> cargo udeps --target x86_64-unknown-linux-gnu -p ttsmagic-server --quiet
+> cargo udeps --target wasm32-unknown-unknown -p ttsmagic-frontend --quiet
+
 deploy:
 > output_filename="ttsmagic-docker-image.tar.gz"
 > [[ -h "$$output_filename" ]] && rm "$$output_filename"

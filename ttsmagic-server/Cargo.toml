@@ -53,15 +53,6 @@ default-features = false
 features = ["jpeg", "jpeg_rayon", "png"]
 version = "^0.23"
 
-[dependencies.async-std-tokio-compat]
-git = "https://github.com/jedisct1/rust-async-std-tokio-compat"
-rev = "53a6dd429c108626c3ea8e0bf066559a644af883"
-
-# [dependencies.openidconnect]
-# default-features = false
-# features = ["futures-03"]
-# version = "1.0.0-alpha"
-
 [dependencies.redis]
 default-features = false
 features = ["aio", "async-std-comp"]
