@@ -71,7 +71,7 @@ impl Component for Model {
                 <deck_renderer::DeckRenderer socket=self.socket.clone() />
                 <deck_list::DeckList socket=self.socket.clone() />
                 <footer>
-                  <a href="/beta/logout/"> { "Sign out" } </a>
+                  <a href="/logout/"> { "Sign out" } </a>
                 </footer>
             </div>
         }

@@ -60,10 +60,8 @@ pub async fn demo_login(req: Request<AppState>) -> Result {
         .await
         .tide_compat()?;
     let session = crate::web::session::Session::new(demo_user);
-    let mut resp = Response::new(StatusCode::Found).set_header(
-        HeaderName::from_ascii(b"Location".to_vec()).unwrap(),
-        "/beta/",
-    );
+    let mut resp = Response::new(StatusCode::Found)
+        .set_header(HeaderName::from_ascii(b"Location".to_vec()).unwrap(), "/");
     let mut redis_conn = state.redis.get_async_connection().await?;
     resp.set_session(&mut redis_conn, session)
         .await

@@ -217,7 +217,7 @@ impl DeckList {
         let deck_id = di.deck.id;
         let download_link = if di.deck.rendered {
             html! {
-                <a href={ format!("/beta/decks/{}.json", deck_id) }, target="_blank">
+                <a href={ format!("/decks/{}.json", deck_id) }, target="_blank">
                     { di.deck.title.clone() }
                 </a>
             }

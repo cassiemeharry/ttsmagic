@@ -47,7 +47,7 @@ fn return_to_url<T>(req: &Request<T>) -> anyhow::Result<Url> {
         this_uri.scheme()
     };
     let realm = format!("{}://{}", scheme, host_str);
-    let url = Url::parse(&format!("{}/beta/steam/complete/", realm))?;
+    let url = Url::parse(&format!("{}/steam/complete/", realm))?;
     Ok(url)
 }
 
@@ -177,7 +177,7 @@ pub async fn handle_redirect(request: Request<AppState>) -> tide::Result {
         .await
         .tide_compat()?;
     let mut response =
-        Response::new(StatusCode::TemporaryRedirect).set_header(LOCATION.clone(), "/beta/");
+        Response::new(StatusCode::TemporaryRedirect).set_header(LOCATION.clone(), "/");
     response
         .set_session(&mut redis_conn, new_session)
         .await
@@ -189,7 +189,7 @@ pub async fn handle_redirect(request: Request<AppState>) -> tide::Result {
 
 pub async fn logout(_req: Request<AppState>) -> tide::Result {
     let mut response =
-        Response::new(StatusCode::TemporaryRedirect).set_header(LOCATION.clone(), "/beta/");
+        Response::new(StatusCode::TemporaryRedirect).set_header(LOCATION.clone(), "/");
     response.clear_session().await.tide_compat()?;
     Ok(response)
 }
