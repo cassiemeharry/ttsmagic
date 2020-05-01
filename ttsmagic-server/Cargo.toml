@@ -41,6 +41,7 @@ surf = "2.0.0-alpha.0"
 tempfile = "3"
 thiserror = "1"
 tide = "0.8"
+toml = "0.5"
 ttsmagic-types = { path = "../ttsmagic-types" }
 tungstenite = "0.10"
 

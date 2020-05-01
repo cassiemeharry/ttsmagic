@@ -9,6 +9,9 @@ ifeq ($(origin .RECIPEPREFIX), undefined)
 endif
 .RECIPEPREFIX = >
 
+DEPLOY_HOST := ttsmagic.cards
+DEPLOY_SSH_COMMAND := "chef-solo -c ~/chef-solo/solo.rb -j ~/chef-solo/dna.json"
+
 build:
 > nix-build nix/ttsmagic.nix
 
@@ -32,6 +35,6 @@ deploy:
 > [[ -h "$$output_filename" ]] && rm "$$output_filename"
 > cargo test
 > time nix-build nix/docker-image.nix -o "$$output_filename" --show-trace
-> time scp "$$output_filename" ttsmagic.cards:"/ttsmagic/$$output_filename"
+> time scp "$$output_filename" $(DEPLOY_HOST):"/ttsmagic/$$output_filename"
 > rm "$$output_filename"
-> time ssh ttsmagic.cards "chef-solo -c ~/chef-solo/solo.rb -j ~/chef-solo/dna.json"
+> time ssh $(DEPLOY_HOST) $(DEPLOY_SSH_COMMAND)

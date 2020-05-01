@@ -28,8 +28,8 @@ impl User {
         let url = Url::parse_with_params(
             "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/",
             &[
-                ("key", crate::secrets::STEAM_API_KEY),
-                ("steamids", steam_id_string.as_str()),
+                ("key", crate::secrets::steam_api_key()),
+                ("steamids", steam_id_string.clone()),
             ],
         )?;
         let api_request = surf::get(url);

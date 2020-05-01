@@ -10,7 +10,7 @@ use ttsmagic_types::UserId;
 use uuid::Uuid;
 
 use crate::{
-    secrets::SESSION_PRIVATE_KEY,
+    secrets::session_private_key,
     user::User,
     web::{AnyhowTideCompat, AppState},
 };
@@ -82,7 +82,7 @@ impl Session {
         );
 
         let algo = hmac::HMAC_SHA256;
-        let key = hmac::Key::new(algo, SESSION_PRIVATE_KEY.as_ref());
+        let key = hmac::Key::new(algo, session_private_key().as_ref());
         hmac::verify(&key, session_id_bytes, &sig_from_cookie)
             .map_err(|_| anyhow!("Signature verification failed"))?;
         Ok(session_id)
@@ -92,7 +92,7 @@ impl Session {
         let session_id_str = self.session_id.to_string();
         let session_id_bytes: &[u8] = session_id_str.as_bytes();
         let algo = hmac::HMAC_SHA256;
-        let key = hmac::Key::new(algo, SESSION_PRIVATE_KEY.as_ref());
+        let key = hmac::Key::new(algo, session_private_key().as_ref());
         let signature = hmac::sign(&key, session_id_bytes);
         let encoded_sig = hex::encode(signature);
         format!("{}:{}", session_id_str, encoded_sig)

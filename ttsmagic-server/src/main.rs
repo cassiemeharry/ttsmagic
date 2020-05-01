@@ -30,25 +30,6 @@ fn setup_logging() -> Result<()> {
     }
 
     builder.init();
-    // let pretty_logger = builder.build();
-    // let async_logger = async_log::Logger::wrap(pretty_logger, || {
-    //     std::panic::catch_unwind(|| {
-    //         let current = async_std::task::current();
-    //         let id = current.id();
-    //         // Internally, async-std's TaskId is a u64, but that's not publicly
-    //         // accessible, so we take advantage of the fact it serializes it
-    //         // without decoration in its Display impl to convert to a string and
-    //         // back. This shouldn't fail unless the internal representation
-    //         // changes.
-    //         let id_str = format!("{}", id);
-    //         let id_num = <u64 as std::str::FromStr>::from_str(&id_str).expect(
-    //             "async_std::task::TaskId did not serialize to a u64 compatible representation!",
-    //         );
-    //         id_num
-    //     })
-    //     .unwrap_or(0)
-    // });
-    // async_logger.start(log::LevelFilter::Trace)?;
     Ok(())
 }
 
@@ -85,6 +66,18 @@ async fn main() -> Result<()> {
         args.value_of("root_folder").unwrap(),
     ))
     .await?;
+
+    let secrets_toml_filename = {
+        // .unwrap() is fine because we specify a default for this argument
+        let raw: &str = args.value_of("secrets_toml").unwrap();
+        let path = std::path::Path::new(raw);
+        if path.is_relative() {
+            async_std::fs::canonicalize(root.join(&path)).await?
+        } else {
+            async_std::fs::canonicalize(&path).await?
+        }
+    };
+    crate::secrets::init_from_toml(secrets_toml_filename)?;
 
     match args.subcommand() {
         ("server", Some(server_args)) => {
@@ -310,6 +303,15 @@ fn get_args<'a>(current_dir: &'a std::path::Path) -> clap::ArgMatches<'a> {
                 .help("Root folder for runtime information"),
         )
         .arg(
+            Arg::with_name("secrets_toml")
+                .long("secrets-toml")
+                .takes_value(true)
+                .value_name("FILE.toml")
+                .default_value("secrets.toml")
+                .env("SECRETS_TOML")
+                .help("Load secret keys from this TOML file"),
+        )
+        .arg(
             Arg::with_name("sentry_dsn")
                 .long("sentry-dsn")
                 .takes_value(true)
@@ -405,10 +407,7 @@ fn get_args<'a>(current_dir: &'a std::path::Path) -> clap::ArgMatches<'a> {
                         .help("Only import decks for this user ID"),
                 ),
         )
-        .subcommand(
-            SubCommand::with_name("cleanup")
-                .about("Cleanup URLs and duplication issues")
-        )
+        .subcommand(SubCommand::with_name("cleanup").about("Cleanup URLs and duplication issues"))
         .subcommand(
             SubCommand::with_name("load-scryfall-bulk")
                 .about("Load card list from Scryfall")
