@@ -353,7 +353,10 @@ impl<E> Future for AsyncPool<E> {
     }
 }
 
-async fn upload_files_tokio(files: Receiver<(PathBuf, String)>) -> Result<()> {
+async fn upload_files_tokio(
+    files: Receiver<(PathBuf, String)>,
+    delete_after_upload: bool,
+) -> Result<()> {
     let s3_client = make_s3_client();
     while let Some((path, key)) = files.recv().await {
         let bucket = match FileBucket::for_key(&key) {
@@ -369,12 +372,14 @@ async fn upload_files_tokio(files: Receiver<(PathBuf, String)>) -> Result<()> {
         match s3_client.head_object(head_req).await {
             Ok(_) => {
                 debug!("File at {}:{} already exists", bucket, key);
-                fs::remove_file(&path).await.with_context(|| {
-                    format!(
-                        "Failed to delete existing file {:?}",
-                        path.to_string_lossy()
-                    )
-                })?;
+                if delete_after_upload {
+                    fs::remove_file(&path).await.with_context(|| {
+                        format!(
+                            "Failed to delete existing file {:?}",
+                            path.to_string_lossy()
+                        )
+                    })?;
+                }
                 continue;
             }
             Err(RusotoError::Service(HeadObjectError::NoSuchKey(_))) => (),
@@ -426,13 +431,20 @@ async fn upload_files_tokio(files: Receiver<(PathBuf, String)>) -> Result<()> {
                 key, bucket
             )
         })?;
-        fs::remove_file(&path).await.with_context(|| {
-            format!(
-                "Failed to delete uploaded file {:?}",
-                path.to_string_lossy()
-            )
-        })?;
-        info!("Uploaded {}:{:?} and removed local file", bucket, key);
+        if delete_after_upload {
+            fs::remove_file(&path).await.with_context(|| {
+                format!(
+                    "Failed to delete uploaded file {:?}",
+                    path.to_string_lossy()
+                )
+            })?;
+            info!("Uploaded {}:{:?} and removed local file", bucket, key);
+        } else {
+            info!(
+                "Uploaded file {}:{:?} (kept local file on disk)",
+                bucket, key
+            );
+        }
     }
     Ok(())
 }
@@ -473,15 +485,16 @@ fn scan_folder(
     })
 }
 
-pub async fn upload_all(root: PathBuf) -> Result<u64> {
+pub async fn upload_all(root: PathBuf, delete_after_upload: bool) -> Result<u64> {
     let root = root.join("files");
     info!("Uploading all files in {:?}", root.to_string_lossy());
 
     let (files_sender, files_receiver) = sync::channel(1);
-    fn upload_wrapper(recv: Receiver<(PathBuf, String)>) -> BoxFuture<'static, Result<()>> {
-        Box::pin(adapt_tokio_future(upload_files_tokio(recv)))
-    }
-    let upload_future_fn = Box::new(upload_wrapper);
+    let upload_future_fn = Box::new(move |recv| -> BoxFuture<Result<()>> {
+        let upload_future = upload_files_tokio(recv, delete_after_upload);
+        let adapted_future = adapt_tokio_future(upload_future);
+        Box::pin(adapted_future)
+    });
     let upload_pool = AsyncPool::new(
         10,
         files_receiver,

@@ -123,8 +123,9 @@ async fn main() -> Result<()> {
         ("cleanup", _) => {
             importer::cleanup(&mut db_pool).await?;
         }
-        ("upload-files", _) => {
-            files::upload_all(root).await?;
+        ("upload-files", Some(opts)) => {
+            let delete_after_upload = opts.is_present("delete_after_upload");
+            files::upload_all(root, delete_after_upload).await?;
         }
         ("load-scryfall-bulk", Some(load_opts)) => {
             let force = load_opts.is_present("force");
@@ -406,7 +407,14 @@ fn get_args<'a>(current_dir: &'a std::path::Path) -> clap::ArgMatches<'a> {
         )
         .subcommand(SubCommand::with_name("cleanup").about("Cleanup URLs and duplication issues"))
         .subcommand(
-            SubCommand::with_name("upload-files").about("Upload local files to cloud storage"),
+            SubCommand::with_name("upload-files")
+                .about("Upload local files to cloud storage")
+                .arg(
+                    Arg::with_name("delete_after_upload")
+                        .long("delete")
+                        .takes_value(false)
+                        .help("Deletes the local files after uploading"),
+                ),
         )
         .subcommand(
             SubCommand::with_name("load-scryfall-bulk")
