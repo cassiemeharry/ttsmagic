@@ -1,5 +1,5 @@
 use anyhow::{anyhow, ensure, Context, Result};
-use async_std::{path::Path, prelude::*, sync::Arc};
+use async_std::{prelude::*, sync::Arc};
 use async_trait::async_trait;
 use redis::AsyncCommands;
 use serde_json::Value;
@@ -273,9 +273,8 @@ impl Deck {
         api: Arc<ScryfallApi>,
         db: &mut impl Executor<Database = Postgres>,
         redis: &mut impl AsyncCommands,
-        root: impl AsRef<Path>,
     ) -> Result<RenderedDeck> {
-        let rendered = crate::tts::render_deck(api, db, redis, root, self).await?;
+        let rendered = crate::tts::render_deck(api, db, redis, self).await?;
         sqlx::query("UPDATE deck SET json = $1::jsonb WHERE id = $2;")
             .bind(serde_json::to_string(&rendered.json_description)?)
             .bind(self.id.as_uuid())

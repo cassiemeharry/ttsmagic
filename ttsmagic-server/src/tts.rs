@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use async_std::{fs, path::Path, sync::Arc};
+use async_std::{sync::Arc};
 use chrono::prelude::*;
 use futures::future::BoxFuture;
 use image::{imageops, RgbImage};
@@ -470,14 +470,12 @@ async fn new_blank_page(cards_wide: u32, cards_high: u32) -> Result<RgbImage> {
 //     move |i, j, card| {}
 // }
 
-async fn make_pages<P: AsRef<Path>, R: AsyncCommands>(
+async fn make_pages<R: AsyncCommands>(
     api: Arc<ScryfallApi>,
     redis: &mut R,
-    root: P,
     deck: &Deck,
     piles: Arc<Piles>,
 ) -> Result<Vec<Page>> {
-    let root = fs::canonicalize(root).await?;
     let mut page_images = Vec::with_capacity(piles.len());
     let mut current_page = Page::new(piles.iter().map(|p| p.cards.len()).sum()).await?;
     // These futures are `spawn`ed, which means they will be evaluated in
@@ -488,7 +486,6 @@ async fn make_pages<P: AsRef<Path>, R: AsyncCommands>(
     for pile in piles.iter() {
         for (card, _count) in pile.cards.iter() {
             let task_card = card.clone();
-            let root = root.clone();
             let api = Arc::clone(&api);
             let wrapper_card = card.clone();
             let card_name = card.combined_name();
@@ -496,7 +493,7 @@ async fn make_pages<P: AsRef<Path>, R: AsyncCommands>(
             let future = Box::pin(async move {
                 let card_id: ScryfallId = task_card.id()?;
                 debug!("Loading card {}...", card_name);
-                let image = task_card.ensure_image(&root, &api).await.with_context(|| {
+                let image = task_card.ensure_image(&api).await.with_context(|| {
                     format!(
                         "Loading image for card {} ({})",
                         task_card.combined_name(),
@@ -578,9 +575,8 @@ async fn make_pages<P: AsRef<Path>, R: AsyncCommands>(
     Ok(page_images)
 }
 
-async fn save_pages<P: AsRef<Path>, R: AsyncCommands>(
+async fn save_pages<R: AsyncCommands>(
     redis: &mut R,
-    root: P,
     deck: &Deck,
     pages: Vec<Page>,
 ) -> Result<Vec<RenderedPage>> {
@@ -609,10 +605,10 @@ async fn save_pages<P: AsRef<Path>, R: AsyncCommands>(
             deck_uuid,
             i,
         );
-        let f = MediaFile::create(&root, &page_filename)?;
+        let f = MediaFile::create(&page_filename).await?;
         page.image.save(&f.path())?;
         let saved = f.finalize().await?;
-        debug!("Saved page image {}", saved.path().to_string_lossy());
+        debug!("Saved page image {}", saved.path());
         saved_pages.push(RenderedPage {
             width: page.width,
             height: page.height,
@@ -751,11 +747,10 @@ fn render_piles_to_json<'a>(
     }))
 }
 
-pub async fn render_deck<P: AsRef<Path>, R: AsyncCommands>(
+pub async fn render_deck<R: AsyncCommands>(
     api: Arc<ScryfallApi>,
     db: &mut impl Executor<Database = Postgres>,
     redis: &mut R,
-    root: P,
     deck: &Deck,
 ) -> Result<RenderedDeck> {
     info!("Rendering deck {} ({})", deck.title, deck.id);
@@ -765,13 +760,12 @@ pub async fn render_deck<P: AsRef<Path>, R: AsyncCommands>(
     let rendered_pages = make_pages(
         Arc::clone(&api),
         redis,
-        &root,
         &deck,
         Arc::new(piles.clone()),
     )
     .await
     .context("Rendering piles to images")?;
-    let saved_pages = save_pages(redis, &root, &deck, rendered_pages).await?;
+    let saved_pages = save_pages(redis, &deck, rendered_pages).await?;
     let json = render_piles_to_json(&deck.title, piles, saved_pages.as_slice())?;
     notify_user(
         redis,

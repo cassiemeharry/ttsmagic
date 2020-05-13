@@ -1,12 +1,18 @@
 use anyhow::{Context, Result};
+use rusoto_credential::StaticProvider;
 use serde::Deserialize;
 use std::{fs::File, io::Read as _, path::Path, sync::RwLock};
 
 #[derive(Debug, Deserialize)]
+struct LinodeObjectStorageSecrets {
+    access_key: String,
+    secret_key: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct Secrets {
-    #[serde(default)]
+    linode_object_storage: LinodeObjectStorageSecrets,
     steam_api_key: String,
-    #[serde(default)]
     session_private_key_hex: String,
 }
 
@@ -21,6 +27,15 @@ impl Secrets {
         let hex_bytes = self.session_private_key_hex.as_bytes();
         hex::decode_to_slice(hex_bytes, &mut decoded_bytes).unwrap();
         decoded_bytes
+    }
+
+    fn linode_credentials(&self) -> StaticProvider {
+        StaticProvider::new(
+            self.linode_object_storage.access_key.clone(),
+            self.linode_object_storage.secret_key.clone(),
+            None,
+            None,
+        )
     }
 }
 
@@ -57,3 +72,4 @@ macro_rules! secret_access {
 
 secret_access!(steam_api_key -> String);
 secret_access!(session_private_key -> [u8; 32]);
+secret_access!(linode_credentials -> StaticProvider);

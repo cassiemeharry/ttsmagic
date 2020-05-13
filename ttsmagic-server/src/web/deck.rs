@@ -79,7 +79,6 @@ pub async fn download_deck_json(req: Request<AppState>) -> Result {
                     state.scryfall_api.clone(),
                     &mut db,
                     &mut redis_conn,
-                    &state.root,
                 )
                 .await;
             let rendered = result_404!(rendered_result, "Failed to render deck {}: {}", deck.id);

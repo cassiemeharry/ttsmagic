@@ -1,6 +1,5 @@
 use async_std::{
     net::{IpAddr, TcpListener, TcpStream},
-    path::PathBuf,
     prelude::*,
     sync::Arc,
     task::{block_on, spawn},
@@ -138,7 +137,6 @@ async fn handle_connection(
                     .get_async_connection()
                     .await
                     .context("While getting Redis to render deck at request of websocket")?;
-                let root = state.root.clone();
                 let handle_sink_1 = handle_sink.clone();
                 let mut handle_sink_2 = handle_sink.clone();
                 spawn(async move {
@@ -147,7 +145,6 @@ async fn handle_connection(
                         api,
                         db_conn,
                         redis_conn,
-                        root,
                         handle_sink_1,
                         parsed_message,
                     ).await;
@@ -177,7 +174,6 @@ async fn handle_incoming_message(
     api: Arc<ScryfallApi>,
     mut db_conn: impl Executor<Database = Postgres> + Send + 'static,
     mut redis_conn: impl AsyncCommands + 'static,
-    root: PathBuf,
     mut handle_sink: mpsc::Sender<s2f::ServerToFrontendMessage>,
     msg: f2s::FrontendToServerMessage,
 ) -> Result<()> {
@@ -204,7 +200,7 @@ async fn handle_incoming_message(
                         crate::deck::load_deck(&mut db_conn, &mut redis_conn, &user, url)
                             .await
                             .context("Loading deck at request of websocket")?;
-                    deck.render(api, &mut db_conn, &mut redis_conn, &root)
+                    deck.render(api, &mut db_conn, &mut redis_conn)
                         .await?;
                     Ok(())
                 })

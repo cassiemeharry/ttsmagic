@@ -212,13 +212,9 @@ RETURNING updated_at
         }
     }
 
-    pub async fn ensure_image<P: AsRef<Path>>(
-        &self,
-        root: P,
-        api: &ScryfallApi,
-    ) -> Result<RgbImage> {
+    pub async fn ensure_image(&self, api: &ScryfallApi) -> Result<RgbImage> {
         let id = self.id()?;
-        api.get_image_by_id(id, root, api::ImageFormat::PNG, api::ImageFace::Front)
+        api.get_image_by_id(id, api::ImageFormat::PNG, api::ImageFace::Front)
             .await
     }
 

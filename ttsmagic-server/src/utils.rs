@@ -5,56 +5,6 @@ use async_std::{
 };
 use futures::{future::BoxFuture, sink::Sink};
 
-// pub struct FuturesIterStream<I, O> {
-//     current_future: Option<Pin<Box<dyn Future<Output = O>>>>,
-//     iterator: I,
-//     output: std::marker::PhantomData<O>,
-// }
-
-// pub fn futures_iter_to_stream<I, O>(iterator: I) -> FuturesIterStream<I::IntoIter, O>
-// where
-//     I: IntoIterator<Item = Box<dyn Future<Output = O>>>,
-// {
-//     FuturesIterStream {
-//         current_future: None,
-//         iterator: iterator.into_iter(),
-//         output: std::marker::PhantomData,
-//     }
-// }
-
-// impl<I, O> Stream for FuturesIterStream<I, O>
-// where
-//     I: Iterator<Item = Box<dyn Future<Output = O>>>,
-// {
-//     type Item = O;
-
-//     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<O>> {
-//         // Safety: we must not replace _self with something else.
-//         let self_: &mut Self = unsafe { self.get_unchecked_mut() };
-//         if self_.current_future.is_none() {
-//             self_.current_future = self_.iterator.next().map(|f| {
-//                 // Safety: we must not move the contents of `current_future`
-//                 // out of the Option without immediately dropping it.
-//                 unsafe { Pin::new_unchecked(f) }
-//             });
-//         }
-//         match self_.current_future.as_mut() {
-//             // self.iterator.next() returned None, so this stream is over with.
-//             None => Poll::Ready(None),
-//             Some(pinned_boxed_future) => {
-//                 let pinned_mut_future: Pin<&mut _> = Pin::as_mut(pinned_boxed_future);
-//                 match pinned_mut_future.poll(cx) {
-//                     Poll::Pending => Poll::Pending,
-//                     Poll::Ready(value) => {
-//                         self_.current_future = None;
-//                         Poll::Ready(Some(value))
-//                     }
-//                 }
-//             }
-//         }
-//     }
-// }
-
 pub struct AsyncStdStreamWrapper<S> {
     stream: S,
     terminated: bool,
@@ -134,4 +84,28 @@ impl<'a, T> futures::future::FusedFuture for AsyncStdStreamWrapperFuture<'a, T> 
     fn is_terminated(&self) -> bool {
         *self.terminated
     }
+}
+
+thread_local! {
+    static TOKIO_RUNTIME: std::cell::RefCell<tokio::runtime::Runtime> = {
+        let runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+        std::cell::RefCell::new(runtime)
+    };
+}
+
+/// Adapts a Tokio-based future in a dedicated thread under the Tokio runtime.
+/// This is rather inefficent for short futures, but might be ok for I/O
+/// operations?
+pub async fn adapt_tokio_future<F>(future: F) -> F::Output
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    TOKIO_RUNTIME.with(|runtime_cell| {
+        let mut runtime = runtime_cell
+            .try_borrow_mut()
+            .expect("Tokio runtime is already in use!");
+        debug!("Running Tokio future");
+        runtime.block_on(future)
+    })
 }

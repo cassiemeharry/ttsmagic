@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use async_std::{path::PathBuf, prelude::*, sync::Arc};
+use async_std::{prelude::*, sync::Arc};
 use sqlx::{Executor, PgPool, Postgres, Row};
 use ttsmagic_types::{DeckId, UserId};
 use url::Url;
@@ -28,7 +28,6 @@ async fn import_decks(
     scryfall_api: Arc<ScryfallApi>,
     db: &mut PgPool,
     redis: &mut impl redis::AsyncCommands,
-    root: PathBuf,
     only_user: Option<UserId>,
 ) -> Result<()> {
     sqlx::query(
@@ -105,7 +104,7 @@ ORDER BY
         let mut deck = crate::deck::load_deck(&mut load_tx, redis, &user, url.clone())
             .await
             .with_context(|| format!("Loading deck for {} at URL {}", user, url))?;
-        deck.render(scryfall_api.clone(), &mut load_tx, redis, &root)
+        deck.render(scryfall_api.clone(), &mut load_tx, redis)
             .await
             .with_context(|| format!("Rendering deck {} for {} URL {}", deck.id, user, url))?;
         load_tx.commit().await?;
@@ -131,7 +130,6 @@ pub async fn import_all(
     scryfall_api: Arc<ScryfallApi>,
     db: &mut PgPool,
     redis: &mut impl redis::AsyncCommands,
-    root: async_std::path::PathBuf,
     only_user: Option<UserId>,
 ) -> Result<()> {
     {
@@ -142,7 +140,7 @@ pub async fn import_all(
     }
 
     info!("Importing decks from old system...");
-    import_decks(scryfall_api, db, redis, root, only_user).await?;
+    import_decks(scryfall_api, db, redis, only_user).await?;
 
     Ok(())
 }

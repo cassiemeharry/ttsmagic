@@ -35,6 +35,8 @@ fn setup_logging() -> Result<()> {
 
 #[async_std::main]
 async fn main() -> Result<()> {
+    dotenv::dotenv()?;
+
     setup_logging()?;
 
     let current_dir = std::env::current_dir()?;
@@ -107,26 +109,22 @@ async fn main() -> Result<()> {
             println!("Loaded deck: {:#?}", deck);
         }
         ("render-deck", Some(render_deck_opts)) => {
-            render_deck_command(
-                scryfall_api,
-                db_pool,
-                &mut redis_conn,
-                root,
-                render_deck_opts,
-            )
-            .await
-            .context("Rendering a deck")?;
+            render_deck_command(scryfall_api, db_pool, &mut redis_conn, render_deck_opts)
+                .await
+                .context("Rendering a deck")?;
         }
         ("import-old", Some(opts)) => {
             let user_id = match opts.value_of("user_id") {
                 Some(raw) => Some(ttsmagic_types::UserId::from_str(raw)?),
                 None => None,
             };
-            importer::import_all(scryfall_api, &mut db_pool, &mut redis_conn, root, user_id)
-                .await?;
+            importer::import_all(scryfall_api, &mut db_pool, &mut redis_conn, user_id).await?;
         }
         ("cleanup", _) => {
             importer::cleanup(&mut db_pool).await?;
+        }
+        ("upload-files", _) => {
+            files::upload_all(root).await?;
         }
         ("load-scryfall-bulk", Some(load_opts)) => {
             let force = load_opts.is_present("force");
@@ -147,7 +145,6 @@ async fn render_deck_command(
     scryfall_api: std::sync::Arc<scryfall::api::ScryfallApi>,
     mut db_pool: sqlx::PgPool,
     redis: &mut redis::aio::Connection,
-    root: async_std::path::PathBuf,
     opts: &clap::ArgMatches<'_>,
 ) -> Result<()> {
     let user = user::User::get_or_create_demo_user(&mut db_pool)
@@ -167,7 +164,7 @@ async fn render_deck_command(
     {
         let mut tx = db_pool.begin().await?;
         rendered = deck
-            .render(scryfall_api, &mut tx, redis, &root)
+            .render(scryfall_api, &mut tx, redis)
             .await
             .context("Rendering deck")?;
         tx.commit().await?;
@@ -175,7 +172,7 @@ async fn render_deck_command(
 
     info!("Rendered deck \"{}\" from {}", deck.title, deck.url);
     for (i, page) in rendered.pages.iter().enumerate() {
-        info!("Page {}: {}", i, page.image.path().to_string_lossy());
+        info!("Page {}: {}", i, page.image.path());
     }
     async_std::task::spawn_blocking({
         let json: serde_json::Value = rendered.json_description.clone();
@@ -408,6 +405,9 @@ fn get_args<'a>(current_dir: &'a std::path::Path) -> clap::ArgMatches<'a> {
                 ),
         )
         .subcommand(SubCommand::with_name("cleanup").about("Cleanup URLs and duplication issues"))
+        .subcommand(
+            SubCommand::with_name("upload-files").about("Upload local files to cloud storage"),
+        )
         .subcommand(
             SubCommand::with_name("load-scryfall-bulk")
                 .about("Load card list from Scryfall")

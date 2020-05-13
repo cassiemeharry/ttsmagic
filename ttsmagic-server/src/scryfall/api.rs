@@ -1,11 +1,5 @@
 use anyhow::{anyhow, Context, Error, Result};
-use async_std::{
-    fs,
-    path::{Path, PathBuf},
-    prelude::*,
-    sync::Mutex,
-    task,
-};
+use async_std::{prelude::*, sync::Mutex, task};
 use chrono::prelude::*;
 use image::RgbImage;
 use serde::Deserialize;
@@ -84,12 +78,15 @@ impl ScryfallApi {
 }
 
 impl ScryfallApi {
-    fn card_image_rel_filename(id: ScryfallId, format: ImageFormat) -> PathBuf {
+    fn card_image_rel_filename(id: ScryfallId, format: ImageFormat) -> String {
         let id_str = format!("{}", id);
         assert!(id_str.len() >= 4); // this should always be true because the IDs are UUIDs
-        let mut path = PathBuf::from("cards");
-        path.push(&id_str[0..2]);
-        path.push(&id_str[2..4]);
+        let mut path = String::with_capacity(50);
+        path.push_str("cards/");
+        path.push_str(&id_str[0..2]);
+        path.push('/');
+        path.push_str(&id_str[2..4]);
+        path.push('/');
         let (suffix, ext) = match format {
             ImageFormat::PNG => ("png", "png"),
             ImageFormat::BorderCrop => ("border-crop", "jpg"),
@@ -98,14 +95,17 @@ impl ScryfallApi {
             ImageFormat::Normal => ("normal", "jpg"),
             ImageFormat::Small => ("small", "jpg"),
         };
-        path.push(&format!("{}_{}.{}", id_str, suffix, ext));
+        path.push_str(&id_str);
+        path.push('_');
+        path.push_str(suffix);
+        path.push('.');
+        path.push_str(ext);
         path
     }
 
-    pub async fn get_image_by_id<P: AsRef<Path>>(
+    pub async fn get_image_by_id(
         &self,
         id: ScryfallId,
-        root: P,
         format: ImageFormat,
         face: ImageFace,
     ) -> Result<RgbImage> {
@@ -114,32 +114,34 @@ impl ScryfallApi {
         // Look for existing files first.
         for format in &[ImageFormat::PNG, ImageFormat::Large] {
             let rel_filename = Self::card_image_rel_filename(id, *format);
-            if let Some(p) = MediaFile::path_exists(&root, &rel_filename).await {
-                match image::open(&p) {
+            if let Some(mut f) = MediaFile::open_if_exists(&rel_filename).await? {
+                let mut buffer = vec![];
+                f.read_to_end(&mut buffer).await?;
+                match image::load_from_memory(buffer.as_slice()) {
                     Ok(i) => return Ok(i.to_rgb()),
                     Err(e) => {
                         error!(
                             "Error opening image at {}, deleting the file: {}",
-                            p.to_string_lossy(),
-                            e
+                            rel_filename, e
                         );
-                        fs::remove_file(&p).await?;
+                        MediaFile::delete(&rel_filename).await?;
                     }
                 }
             }
         }
         'format: while let Some(format) = format_opt {
             let rel_filename = Self::card_image_rel_filename(id, format);
-            if let Some(p) = MediaFile::path_exists(&root, &rel_filename).await {
-                match image::open(&p) {
+            if let Some(mut f) = MediaFile::open_if_exists(&rel_filename).await? {
+                let mut buffer = vec![];
+                f.read_to_end(&mut buffer).await?;
+                match image::load_from_memory(buffer.as_slice()) {
                     Ok(i) => return Ok(i.to_rgb()),
                     Err(e) => {
                         error!(
                             "Error opening image at {}, deleting the file: {}",
-                            p.to_string_lossy(),
-                            e
+                            rel_filename, e
                         );
-                        fs::remove_file(&p).await?;
+                        MediaFile::delete(&rel_filename).await?;
                     }
                 }
             }
@@ -207,7 +209,8 @@ impl ScryfallApi {
                 image::load_from_memory_with_format(bytes.as_slice(), img_format)?.to_rgb()
             };
 
-            let mut f = MediaFile::create(&root, &rel_filename)
+            let mut f = MediaFile::create(&rel_filename)
+                .await
                 .context("Saving card image file from Scryfall")?;
             f.write_all(bytes.as_slice())
                 .await
@@ -217,9 +220,7 @@ impl ScryfallApi {
                 .context("Finishing saving card image file from Scryfall")?;
             debug!(
                 "Saved card image (format: {:?}) for {} to {}",
-                format,
-                id,
-                rel_filename.to_string_lossy(),
+                format, id, rel_filename,
             );
             return Ok(image);
         }

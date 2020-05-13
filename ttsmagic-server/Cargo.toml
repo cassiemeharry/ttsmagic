@@ -10,10 +10,12 @@ edition = "2018"
 anyhow = "1"
 # async-log = "2"
 async-trait = "0.1"
+bytes = "0.5"
 chrono = "0.4"
 clap = "2"
 cookie = "*"
 csv = "1"
+dotenv = "0.15"
 failure = "0.1"
 # failure_derive = "0.1"
 futures = "0.3"
@@ -60,6 +62,20 @@ features = ["aio", "async-std-comp"]
 git = "https://github.com/mitsuhiko/redis-rs"
 rev = "1ea0bd0c2e7b450eb5279995142fd64e5db0fa69"
 
+[dependencies.rusoto_core]
+default-features = false
+features = ["rustls"]
+version = "0.43"
+
+[dependencies.rusoto_credential]
+default-features = false
+version = "0.43"
+
+[dependencies.rusoto_s3]
+default-features = false
+features = ["rustls"]
+version = "0.43"
+
 [dependencies.rust-embed]
 features = ["compression", "interpolate-folder-path"]
 version = "5"
@@ -77,6 +93,11 @@ version = "1"
 default-features = false
 features = ["chrono", "postgres", "runtime-async-std", "uuid"]
 version = "0.2"
+
+[dependencies.tokio]
+default-features = false
+features = ["rt-core", "dns", "net"]
+version = "*"
 
 [dependencies.async-tungstenite]
 features = ["async-std-runtime"]
