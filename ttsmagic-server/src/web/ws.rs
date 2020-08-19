@@ -6,7 +6,11 @@ use async_std::{
 };
 // use async_std_tokio_compat::*;
 use anyhow::{anyhow, ensure, Context, Result};
-use async_tungstenite::{accept_hdr_async, WebSocketStream};
+use async_tungstenite::{
+    accept_hdr_async,
+    tungstenite::{self, Message},
+    WebSocketStream,
+};
 use futures::{
     channel::mpsc,
     future::BoxFuture,
@@ -16,7 +20,6 @@ use http_0_2::status::StatusCode;
 use redis::AsyncCommands;
 use sqlx::{Executor, Postgres};
 use ttsmagic_types::{frontend_to_server as f2s, server_to_frontend as s2f};
-use tungstenite::Message;
 
 use crate::{
     deck::{get_decks_for_user, Deck},
@@ -99,6 +102,7 @@ async fn handle_connection(
             },
             outbound_msg_opt = handle_stream.next() => {
                 if let Some(outbound_msg) = outbound_msg_opt {
+                    debug!("Got outbound message from handle_stream: {:?}", outbound_msg);
                     outbound_msg.send(&mut ws_stream).await?;
                 }
             },
@@ -200,8 +204,7 @@ async fn handle_incoming_message(
                         crate::deck::load_deck(&mut db_conn, &mut redis_conn, &user, url)
                             .await
                             .context("Loading deck at request of websocket")?;
-                    deck.render(api, &mut db_conn, &mut redis_conn)
-                        .await?;
+                    deck.render(api, &mut db_conn, &mut redis_conn).await?;
                     Ok(())
                 })
             })

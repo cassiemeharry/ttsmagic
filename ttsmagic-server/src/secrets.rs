@@ -54,18 +54,46 @@ pub fn init_from_toml<P: AsRef<Path>>(path: P) -> Result<()> {
     Ok(())
 }
 
+#[inline]
+fn get_secret<F, T>(f: F) -> T
+where
+    F: Fn(&Secrets) -> T,
+{
+        let l = SECRETS.read().unwrap();
+        match l.as_ref() {
+            Some(s) => f(s),
+            None => {
+                if cfg!(test) {
+                    drop(l);
+                    let cwd = std::env::current_dir().unwrap();
+                    let mut dir: &Path = &cwd;
+                    let mut toml_path;
+                    loop {
+                        toml_path = dir.join("secrets.toml");
+                        if toml_path.is_file() {
+                            break;
+                        }
+                        dir = dir.parent().expect("Failed to find secrets.toml file");
+                    }
+                    println!("Loading secrets from {:?}", toml_path.to_string_lossy());
+                    init_from_toml(toml_path).unwrap();
+                    let l = SECRETS.read().unwrap();
+                    let secrets = l.as_ref().unwrap();
+                    f(secrets)
+                } else {
+                    panic!(
+                        "Attempted to access secret {:?} before secrets were initialized!",
+                        stringify!($name)
+                    )
+                }
+            }
+        }
+}
+
 macro_rules! secret_access {
     ($name:ident -> $t:ty) => {
         pub fn $name() -> $t {
-            let l = SECRETS.read().unwrap();
-            let secrets_opt: Option<&Secrets> = l.as_ref();
-            match secrets_opt {
-                Some(s) => s.$name(),
-                None => panic!(
-                    "Attempted to access secret {:?} before secrets were initialized!",
-                    stringify!($name)
-                ),
-            }
+            get_secret(|s| s.$name())
         }
     };
 }

@@ -18,7 +18,7 @@ let
       rev = "v0.1.11";
       sha256 = "1drz0slv33p4spm52sb5lnmpb83q8l7k3cvp0zcsinbjv8glvvnv";
     };
-    buildInputs = [ pkgs.libressl pkgs.pkg-config ];
+    buildInputs = [ pkgs.libressl pkgs.pkg-config pkgs.zlib ];
   };
 in
 pkgs.mkShell {

@@ -19,10 +19,11 @@ dotenv = "0.15"
 failure = "0.1"
 # failure_derive = "0.1"
 futures = "0.3"
+futures_0_1 = { version = "0.1", package = "futures" }
 hex = "0.4"
 http_0_1 = { version = "0.1", package = "http" }
 http_0_2 = { version = "0.2", package = "http" }
-http-client = "1"
+http-client = "*"
 humantime = "1"
 lazy_static = "1"
 log = "0.4"
@@ -45,11 +46,10 @@ thiserror = "1"
 tide = "0.8"
 toml = "0.5"
 ttsmagic-types = { path = "../ttsmagic-types" }
-tungstenite = "0.10"
 
 [dependencies.async-std]
 features = ["attributes"]
-version = "^1.5"
+version = "=1.5"
 
 [dependencies.image]
 default-features = false
@@ -97,11 +97,15 @@ version = "0.2"
 [dependencies.tokio]
 default-features = false
 features = ["rt-core", "dns", "net"]
-version = "*"
+version = "0.2"
+
+#[dependencies.tokio_io_0_1]
+#package = "tokio-io"
+#version = "0.1"
 
 [dependencies.async-tungstenite]
 features = ["async-std-runtime"]
-version = "*"
+version = "0.8"
 
 [dependencies.url]
 features = ["serde"]

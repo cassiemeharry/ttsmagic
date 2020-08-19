@@ -6,7 +6,7 @@ use async_std::{
     pin::Pin,
     prelude::*,
     sync::{self, Receiver, Sender},
-    task::{spawn, spawn_blocking, Context, JoinHandle, Poll},
+    task::{spawn, spawn_blocking, Context, Poll},
 };
 use futures::future::BoxFuture;
 use http_0_2::StatusCode;
@@ -142,6 +142,9 @@ impl MediaFile {
         bucket: FileBucket,
         name: String,
     ) -> Result<Vec<u8>> {
+        // This function must return a Vec<u8> because returning a Tokio-backed
+        // stream ends up yielding zero bytes. I think this is because of the
+        // interaction between the two reactors.
         let req = GetObjectRequest {
             bucket: bucket.to_string(),
             key: name.to_string(),
@@ -159,11 +162,32 @@ impl MediaFile {
             .content_length
             .and_then(|x| x.try_into().ok())
             .unwrap_or(10_000);
-        let mut sync_reader = streaming_body.into_async_read();
+        let mut async_reader = streaming_body.into_async_read();
         let mut body = Vec::with_capacity(body_size_guess);
-        debug!("Reading file body synchronously");
-        sync_reader.read_to_end(&mut body).await?;
+        async_reader.read_to_end(&mut body).await?;
         Ok(body)
+    }
+
+    async fn file_exists(key: &str) -> Result<bool> {
+        let s3_client = make_s3_client();
+        let bucket = FileBucket::for_key(key)
+            .ok_or_else(|| anyhow!("File {:?} does not match any bucket", key))?;
+        let head_req = HeadObjectRequest {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            ..Default::default()
+        };
+        match s3_client.head_object(head_req).await {
+            Ok(_) => Ok(true),
+            Err(RusotoError::Service(HeadObjectError::NoSuchKey(_))) => Ok(false),
+            Err(RusotoError::Unknown(cause)) if cause.status == StatusCode::NOT_FOUND => Ok(false),
+            Err(e) => Err(anyhow::Error::from(e)).with_context(|| {
+                format!(
+                    "Failed to check whether file in bucket {} exists at key {:?}",
+                    bucket, key
+                )
+            }),
+        }
     }
 
     pub async fn open_if_exists(name: &str) -> Result<Option<fs::File>> {
@@ -181,7 +205,7 @@ impl MediaFile {
             },
         };
         let mut f = spawn_blocking(move || tempfile::tempfile().map(fs::File::from)).await?;
-        f.write_all(body.as_slice()).await?;
+        f.write_all(&body).await?;
         f.flush().await?;
         f.seek(io::SeekFrom::Start(0)).await?;
         Ok(Some(f))
@@ -232,8 +256,18 @@ pub struct WritableMediaFile {
 impl WritableMediaFile {
     async fn new(media_file: MediaFile) -> Result<Self> {
         // This blocks
-        let (temp_file, temp_path) =
-            spawn_blocking(|| tempfile::NamedTempFile::new().map(|ntf| ntf.into_parts())).await?;
+        let suffix = media_file
+            .key
+            .rfind('.')
+            .map(|index| media_file.key[index..].to_string());
+        let (temp_file, temp_path) = spawn_blocking(move || {
+            match suffix {
+                Some(ext) => tempfile::Builder::new().suffix(&ext).tempfile(),
+                None => tempfile::NamedTempFile::new(),
+            }
+            .map(|ntf| ntf.into_parts())
+        })
+        .await?;
         Ok(Self {
             media_file,
             temp_file: temp_file.into(),
@@ -259,32 +293,57 @@ impl WritableMediaFile {
         bucket: FileBucket,
         name: String,
         mut file: fs::File,
-    ) -> Result<()> {
+    ) -> Result<String> {
+        let (prefix, ext): (&str, &str) = match name.rfind('.') {
+            Some(dot_index) => (&name[0..dot_index], &name[dot_index + 1..]),
+            None => (name.as_str(), ""),
+        };
+        let mut key = name.clone();
+        const RANDOM_LEN: usize = 8;
+        let mut random_chars = String::with_capacity(RANDOM_LEN);
+        while MediaFile::file_exists(&key).await? {
+            use rand::Rng;
+
+            random_chars.clear();
+            for _ in 0..RANDOM_LEN {
+                let c = rand::thread_rng().gen_range('a' as u8, ('z' as u8) + 1) as char;
+                random_chars.push(c);
+            }
+            key = format!("{}_{}.{}", prefix, random_chars, ext);
+        }
+        if &key != &name {
+            warn!(
+                "Saving file in bucket {} as {:?} (requested name was {:?})",
+                bucket, key, name
+            );
+        }
         let _ = file.seek(io::SeekFrom::Start(0)).await?;
         let mut file_contents = Vec::new();
-        let read_result_len = file.read_to_end(&mut file_contents).await;
-        let read_result_bytes = read_result_len.map(|_| file_contents.into());
-        let byte_stream_inner = async_std::stream::once(read_result_bytes);
+        file.read_to_end(&mut file_contents).await?;
+        let len = file_contents.len();
+        let byte_stream_inner = async_std::stream::once(Ok(file_contents.into()));
         let byte_stream = ByteStream::new(byte_stream_inner);
         let req = PutObjectRequest {
             bucket: bucket.to_string(),
-            key: name,
+            key: key.clone(),
             body: Some(byte_stream),
+            content_length: Some(len as u64 as i64),
             ..Default::default()
         };
         let _resp = s3_client.put_object(req).await?;
-        Ok(())
+        Ok(key)
     }
 
-    async fn upload(self) -> Result<MediaFile> {
+    async fn upload(mut self) -> Result<MediaFile> {
         let s3_client = make_s3_client();
         let resp_future = Self::upload_file_tokio(
             s3_client,
             self.media_file.bucket,
-            self.media_file.key.clone(),
+            self.media_file.key,
             self.temp_file,
         );
-        adapt_tokio_future(resp_future).await?;
+        let key = adapt_tokio_future(resp_future).await?;
+        self.media_file.key = key;
         Ok(self.media_file)
     }
 }
@@ -307,42 +366,48 @@ impl Write for WritableMediaFile {
     }
 }
 
-struct AsyncPool<E> {
-    // receiver: Receiver<T>,
-    // future_fn: Box<dyn Fn(Receiver<T>) -> BoxFuture<'static, Result<(), E>> + Send + 'static>,
-    tasks: VecDeque<JoinHandle<Result<(), E>>>,
+struct AsyncPool<T, E> {
+    parallelism: usize,
+    receiver: Receiver<T>,
+    future_fn: Box<dyn Fn(Receiver<T>) -> BoxFuture<'static, Result<(), E>> + Send + 'static>,
+    tasks: VecDeque<tokio::task::JoinHandle<Result<(), E>>>,
     any_finished: bool,
 }
 
-impl<E: Send + Sync + 'static> AsyncPool<E> {
-    fn new<F, T: Send + 'static>(parallelism: usize, receiver: Receiver<T>, future_fn: F) -> Self
+impl<T: Send + 'static, E: Send + Sync + 'static> AsyncPool<T, E> {
+    fn new<F>(parallelism: usize, receiver: Receiver<T>, future_fn: F) -> Self
     where
-        F: Fn(Receiver<T>) -> BoxFuture<'static, Result<(), E>> + 'static,
+        F: Fn(Receiver<T>) -> BoxFuture<'static, Result<(), E>> + Send + 'static,
     {
-        let mut tasks = VecDeque::with_capacity(parallelism);
-        for _ in 0..parallelism {
-            tasks.push_back(spawn(future_fn(receiver.clone())));
-        }
-        let any_finished = false;
         AsyncPool {
-            // receiver,
-            // future_fn,
-            tasks,
-            any_finished,
+            parallelism,
+            receiver,
+            future_fn: Box::new(future_fn),
+            tasks: VecDeque::with_capacity(parallelism),
+            any_finished: false,
         }
     }
 }
 
-impl<E> Future for AsyncPool<E> {
+impl<T, E: Send + 'static> Future for AsyncPool<T, E> {
     type Output = Result<(), E>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.tasks.is_empty() && !self.any_finished {
+            let handle = tokio::runtime::Handle::current();
+            for _ in 0..self.parallelism {
+                let spawned = handle.spawn((self.future_fn)(self.receiver.clone()));
+                self.tasks.push_back(spawned);
+            }
+        }
+
         while let Some(mut handle) = self.tasks.pop_front() {
             match Pin::new(&mut handle).poll(cx) {
-                Poll::Ready(Ok(())) => {
+                Poll::Ready(Ok(Ok(()))) => {
                     self.any_finished = true;
                 }
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(Err(e))) => return Poll::Ready(Err(e)),
+                Poll::Ready(Err(e)) => Err(e).unwrap(),
                 Poll::Pending => {
                     self.tasks.push_back(handle);
                     return Poll::Pending;
@@ -363,45 +428,18 @@ async fn upload_files_tokio(
             Some(b) => b,
             None => continue,
         };
-
-        let head_req = HeadObjectRequest {
-            bucket: bucket.to_string(),
-            key: key.clone(),
-            ..Default::default()
-        };
-        match s3_client.head_object(head_req).await {
-            Ok(_) => {
-                debug!("File at {}:{} already exists", bucket, key);
-                if delete_after_upload {
-                    fs::remove_file(&path).await.with_context(|| {
-                        format!(
-                            "Failed to delete existing file {:?}",
-                            path.to_string_lossy()
-                        )
-                    })?;
-                }
-                continue;
-            }
-            Err(RusotoError::Service(HeadObjectError::NoSuchKey(_))) => (),
-            Err(RusotoError::Unknown(cause)) if cause.status == StatusCode::NOT_FOUND => (),
-            Err(RusotoError::Unknown(cause)) => {
-                warn!(
-                    "An unknown {} error occurred, assuming {}:{:?} doesn't exist\nHeaders: {:?}\nBody: {:?}",
-                    cause.status,
-                    bucket,
-                    key,
-                    cause.headers,
-                    cause.body_as_str(),
-                );
-            }
-            Err(e) => {
-                return Err(anyhow::Error::from(e)).with_context(|| {
+        let exists = MediaFile::file_exists(&key).await?;
+        if exists {
+            debug!("File with key {} already exists", key);
+            if delete_after_upload {
+                fs::remove_file(&path).await.with_context(|| {
                     format!(
-                        "Failed to check whether file in bucket {} exists at key {:?}",
-                        bucket, key
+                        "Failed to delete existing file {:?}",
+                        path.to_string_lossy()
                     )
-                })
+                })?;
             }
+            continue;
         }
         let mut file = fs::File::open(&path).await.with_context(|| {
             format!(
@@ -492,15 +530,14 @@ pub async fn upload_all(root: PathBuf, delete_after_upload: bool) -> Result<u64>
     let (files_sender, files_receiver) = sync::channel(1);
     let upload_future_fn = Box::new(move |recv| -> BoxFuture<Result<()>> {
         let upload_future = upload_files_tokio(recv, delete_after_upload);
-        let adapted_future = adapt_tokio_future(upload_future);
-        Box::pin(adapted_future)
+        Box::pin(upload_future)
     });
     let upload_pool = AsyncPool::new(
         10,
         files_receiver,
         upload_future_fn as Box<dyn Fn(Receiver<_>) -> BoxFuture<'static, _> + Send + 'static>,
     );
-    let upload_handle = spawn(upload_pool);
+    let upload_handle = spawn(adapt_tokio_future(upload_pool));
 
     let cards_scanner = scan_folder(root.clone(), root.join("cards"), files_sender.clone());
     let page_scanner = scan_folder(root.clone(), root.join("page"), files_sender.clone());

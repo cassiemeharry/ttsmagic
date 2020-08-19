@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use async_std::{sync::Arc};
+use async_std::{prelude::*, sync::Arc};
 use chrono::prelude::*;
 use futures::future::BoxFuture;
 use image::{imageops, RgbImage};
@@ -20,6 +20,7 @@ use crate::{
     files::{MediaFile, StaticFiles},
     notify::notify_user,
     scryfall::{self, api::ScryfallApi, ScryfallCard, ScryfallId, ScryfallOracleId},
+    utils::AsyncParallelStream,
 };
 
 #[derive(Clone, Debug)]
@@ -476,21 +477,24 @@ async fn make_pages<R: AsyncCommands>(
     deck: &Deck,
     piles: Arc<Piles>,
 ) -> Result<Vec<Page>> {
+    // The higher the parallelism, the faster the pages can be rendered, but the
+    // more memory this function will consume.
+    const PARALLELISM: usize = 10;
+
     let mut page_images = Vec::with_capacity(piles.len());
     let mut current_page = Page::new(piles.iter().map(|p| p.cards.len()).sum()).await?;
     // These futures are `spawn`ed, which means they will be evaluated in
     // parallel. This works out to be *much* faster than loading them serially,
     // though it does take more memory.
-    let mut card_load_futures: Vec<(String, BoxFuture<'static, Result<(ScryfallCard, RgbImage)>>)> =
-        vec![];
+    let mut card_load_futures: Vec<BoxFuture<'static, Result<(ScryfallCard, RgbImage)>>> = vec![];
     for pile in piles.iter() {
         for (card, _count) in pile.cards.iter() {
             let task_card = card.clone();
             let api = Arc::clone(&api);
             let wrapper_card = card.clone();
             let card_name = card.combined_name();
-            let card_name_2 = card_name.clone();
-            let future = Box::pin(async move {
+            // let card_name_2 = card_name.clone();
+            let future = async move {
                 let card_id: ScryfallId = task_card.id()?;
                 debug!("Loading card {}...", card_name);
                 let image = task_card.ensure_image(&api).await.with_context(|| {
@@ -503,12 +507,14 @@ async fn make_pages<R: AsyncCommands>(
                 let image = fixup_size(image).await;
                 debug!("Finished loading card {}", card_name);
                 Ok((wrapper_card, image))
-            }) as BoxFuture<_>;
-            card_load_futures.push((card_name_2, future));
+            };
+            let future = Box::pin(future) as BoxFuture<_>;
+            card_load_futures.push(future);
         }
     }
     let image_count = NonZeroU16::new(card_load_futures.len().try_into()?)
         .ok_or_else(|| anyhow!("Tried to render a deck with no cards in it"))?;
+    let mut card_load_stream = AsyncParallelStream::new(PARALLELISM, card_load_futures);
     let mut images_rendered: u16 = 0;
     notify_user(
         redis,
@@ -522,8 +528,9 @@ async fn make_pages<R: AsyncCommands>(
         },
     )
     .await?;
-    for (k, (_card_name, card_info_future)) in card_load_futures.into_iter().enumerate() {
-        let (card, image) = card_info_future.await?;
+    let mut k = 0;
+    while let Some(card_info) = card_load_stream.next().await {
+        let (card, image) = card_info.context("Failed to load card image")?;
         let card_id = card.id()?;
         if (current_page.card_mapping.len() as u32)
             >= ((current_page.width * current_page.height) - 1)
@@ -542,7 +549,9 @@ async fn make_pages<R: AsyncCommands>(
         assert!(row < current_page.height);
         assert!(column < current_page.width);
         debug!(
-            "Placing card {} ({}) on page {} at row {}, column {}",
+            "Placing card #{} of {}, {} ({}) on page {} at row {}, column {}",
+            k + 1,
+            image_count,
             card.combined_name(),
             card_id,
             page_images.len(),
@@ -567,6 +576,7 @@ async fn make_pages<R: AsyncCommands>(
             },
         )
         .await?;
+        k += 1;
     }
     if !current_page.card_mapping.is_empty() {
         page_images.push(current_page);
@@ -667,7 +677,8 @@ fn render_piles_to_json<'a>(
     let linear_piles = piles
         .into_iter()
         .map(|pile: Pile| <LinearPile as TryFrom<(Pile, &[RenderedPage])>>::try_from((pile, pages)))
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()
+        .context("Failed to linearize piles")?;
     let mut stacks = Vec::with_capacity(linear_piles.len());
     for (i, pile) in linear_piles.iter().enumerate() {
         let root_transform: Value = {
@@ -757,16 +768,14 @@ pub async fn render_deck<R: AsyncCommands>(
     let piles = collect_card_piles(db, deck)
         .await
         .context("Collecting and sorting cards")?;
-    let rendered_pages = make_pages(
-        Arc::clone(&api),
-        redis,
-        &deck,
-        Arc::new(piles.clone()),
-    )
-    .await
-    .context("Rendering piles to images")?;
-    let saved_pages = save_pages(redis, &deck, rendered_pages).await?;
-    let json = render_piles_to_json(&deck.title, piles, saved_pages.as_slice())?;
+    let rendered_pages = make_pages(Arc::clone(&api), redis, &deck, Arc::new(piles.clone()))
+        .await
+        .context("Rendering piles to images")?;
+    let saved_pages = save_pages(redis, &deck, rendered_pages)
+        .await
+        .context("Failed to save pages")?;
+    let json = render_piles_to_json(&deck.title, piles, saved_pages.as_slice())
+        .context("Failed to render piles to TTS JSON format")?;
     notify_user(
         redis,
         deck.user_id,

@@ -1,11 +1,10 @@
 use anyhow::{anyhow, ensure, Context, Result};
-use cookie::Cookie;
 use futures::future::BoxFuture;
 use redis::AsyncCommands;
 use ring::hmac;
 use sqlx::{Executor, Postgres};
 use std::str::FromStr;
-use tide::{Next, Request, Response};
+use tide::{http::Cookie, Next, Request, Response};
 use ttsmagic_types::UserId;
 use uuid::Uuid;
 

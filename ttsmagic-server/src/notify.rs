@@ -14,7 +14,11 @@ pub async fn notify_user<R: AsyncCommands>(
 ) -> Result<()> {
     let channel_name = user_channel_name(user);
     let serialized = serde_json::to_string(&msg)?;
-    redis.publish(&channel_name, serialized).await?;
+    debug!("Sending notification to user {:?}: {:?}", user, msg);
+    match redis.publish::<_, _, i32>(&channel_name, serialized).await {
+        Ok(count) => debug!("Notification sent to {:?} listener(s)", count),
+        Err(e) => error!("Failed to publish notification! {}", e),
+    };
     Ok(())
 }
 

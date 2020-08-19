@@ -67,8 +67,13 @@ code {
 #generated-decks li:nth-child(odd) {
     background-color: rgba(0, 0, 0, 0.1);
 }
+#generated-decks li > span {
+    white-space: nowrap;
+}
 #generated-decks li > span.deck-name {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 #generated-decks li > span.deck-status {
     flex: 1 1 auto;

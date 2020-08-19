@@ -362,13 +362,13 @@ pub async fn load_bulk<P: AsRef<Path>>(
         set_code_buffer: String,
     }
     impl<'a> ParseIter<'a> {
-        fn new(bytes: &'a [u8]) -> Self {
+        fn new(bytes: &'a [u8], estimated_total: u64) -> Self {
             let len = bytes.len() as u64;
-            let mut pbar_multi = pbr::MultiBar::new();
+            let pbar_multi = pbr::MultiBar::new();
             let mut pbar_bytes = pbar_multi.create_bar(len);
             pbar_bytes.set_units(pbr::Units::Bytes);
             pbar_bytes.set_max_refresh_rate(Some(std::time::Duration::from_millis(100)));
-            let mut pbar_cards = pbar_multi.create_bar(50_000);
+            let mut pbar_cards = pbar_multi.create_bar(estimated_total);
             pbar_cards.set_max_refresh_rate(Some(std::time::Duration::from_millis(100)));
             pbar_cards.format(".....");
             pbar_cards.show_percent = false;
@@ -466,7 +466,13 @@ pub async fn load_bulk<P: AsRef<Path>>(
     assert!(bytes.len() > 0, "Failed to fill bytes in load_bulk!");
 
     let start = std::time::Instant::now();
-    let cards_iter = ParseIter::new(bytes.as_slice());
+    let estimated_count = sqlx::query("SELECT COUNT(*) as total FROM scryfall_card;")
+        .fetch_one(db)
+        .await?
+        .get::<i64, _>("total")
+        .max(50_000) as u64;
+
+    let cards_iter = ParseIter::new(bytes.as_slice(), estimated_count);
     info!("Saving cards from Scryfall into database...");
     for card_result in pbr::PbIter::new(cards_iter) {
         let card = card_result.context("Loading cards from Scryfall bulk data")?;

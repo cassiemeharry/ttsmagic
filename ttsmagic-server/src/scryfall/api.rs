@@ -7,6 +7,15 @@ use serde::Deserialize;
 use super::ScryfallId;
 use crate::files::MediaFile;
 
+lazy_static::lazy_static! {
+    static ref LOCATION_HEADER: tide::http::headers::HeaderName =
+        tide::http::headers::HeaderName::from_ascii(b"Location".to_vec())
+        .unwrap();
+    static ref USER_AGENT_HEADER: tide::http::headers::HeaderName =
+        tide::http::headers::HeaderName::from_ascii(b"User-Agent".to_vec())
+        .unwrap();
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum ImageFormat {
     PNG,
@@ -37,6 +46,17 @@ impl ImageFormat {
             Self::Large => Some(Self::Normal),
             Self::Normal => Some(Self::Small),
             Self::Small => None,
+        }
+    }
+
+    fn raw(self) -> image::ImageFormat {
+        match self {
+            ImageFormat::PNG => image::ImageFormat::Png,
+            ImageFormat::BorderCrop => image::ImageFormat::Jpeg,
+            ImageFormat::ArtCrop => image::ImageFormat::Jpeg,
+            ImageFormat::Large => image::ImageFormat::Jpeg,
+            ImageFormat::Normal => image::ImageFormat::Jpeg,
+            ImageFormat::Small => image::ImageFormat::Jpeg,
         }
     }
 }
@@ -117,7 +137,7 @@ impl ScryfallApi {
             if let Some(mut f) = MediaFile::open_if_exists(&rel_filename).await? {
                 let mut buffer = vec![];
                 f.read_to_end(&mut buffer).await?;
-                match image::load_from_memory(buffer.as_slice()) {
+                match image::load_from_memory_with_format(buffer.as_slice(), format.raw()) {
                     Ok(i) => return Ok(i.to_rgb()),
                     Err(e) => {
                         error!(
@@ -134,7 +154,7 @@ impl ScryfallApi {
             if let Some(mut f) = MediaFile::open_if_exists(&rel_filename).await? {
                 let mut buffer = vec![];
                 f.read_to_end(&mut buffer).await?;
-                match image::load_from_memory(buffer.as_slice()) {
+                match image::load_from_memory_with_format(buffer.as_slice(), format.raw()) {
                     Ok(i) => return Ok(i.to_rgb()),
                     Err(e) => {
                         error!(
@@ -172,12 +192,16 @@ impl ScryfallApi {
                         continue 'format;
                     }
                 };
-                match r.status().as_u16() {
+                match r.status() as u16 {
                     200 => break 'redirect r,
                     302 => {
-                        let location = r.header("Location").ok_or_else(|| {
-                            anyhow!("Missing Location header in Scryfall image redirect")
-                        })?;
+                        let location = r
+                            .header(&LOCATION_HEADER)
+                            .and_then(|headers| headers.first())
+                            .map(|h| h.as_str())
+                            .ok_or_else(|| {
+                                anyhow!("Missing Location header in Scryfall image redirect")
+                            })?;
                         debug!("Got redirect from {} to {}", url, location);
                         url = location.to_string();
                         continue 'redirect;
@@ -197,17 +221,8 @@ impl ScryfallApi {
                 }
             };
             let bytes = response.body_bytes().await?;
-            let image = {
-                let img_format = match format {
-                    ImageFormat::PNG => image::ImageFormat::Png,
-                    ImageFormat::BorderCrop => image::ImageFormat::Jpeg,
-                    ImageFormat::ArtCrop => image::ImageFormat::Jpeg,
-                    ImageFormat::Large => image::ImageFormat::Jpeg,
-                    ImageFormat::Normal => image::ImageFormat::Jpeg,
-                    ImageFormat::Small => image::ImageFormat::Jpeg,
-                };
-                image::load_from_memory_with_format(bytes.as_slice(), img_format)?.to_rgb()
-            };
+            let image =
+                image::load_from_memory_with_format(bytes.as_slice(), format.raw())?.to_rgb();
 
             let mut f = MediaFile::create(&rel_filename)
                 .await
@@ -243,7 +258,7 @@ impl ScryfallApi {
         struct BulkDataListItem<'a> {
             #[serde(rename = "type")]
             type_: &'a str,
-            permalink_uri: &'a str,
+            download_uri: &'a str,
         }
 
         let bulk_response = response.body_bytes().await?;
@@ -255,8 +270,8 @@ impl ScryfallApi {
         for item in bulk_response.data {
             debug!("Looking at listing file {}", item.type_);
             if item.type_ == file {
-                info!("Downloading bulk file {}", item.permalink_uri);
-                let response = self.get(item.permalink_uri).await?;
+                info!("Downloading bulk file {}", item.download_uri);
+                let response = self.get(item.download_uri).await?;
                 return Ok(response);
             }
         }
@@ -266,7 +281,7 @@ impl ScryfallApi {
     async fn get(&self, url: &str) -> Result<surf::Response> {
         self.delay().await;
         let request = self.client.get(url).set_header(
-            "User-Agent",
+            (&*USER_AGENT_HEADER).clone(),
             concat!("ttsmagic.cards/", env!("CARGO_PKG_VERSION")),
         );
         Ok(request.await.map_err(Error::msg)?)
@@ -275,7 +290,7 @@ impl ScryfallApi {
     async fn delay(&self) {
         let mut last_query = self.last_query.lock().await;
         let now = Utc::now();
-        let threshold = *last_query + chrono::Duration::seconds(1);
+        let threshold = *last_query + chrono::Duration::milliseconds(200);
         if now < threshold {
             let delta = threshold - now;
             debug!("Delaying next Scryfall request by {}", delta);

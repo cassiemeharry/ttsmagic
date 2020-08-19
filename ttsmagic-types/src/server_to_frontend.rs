@@ -4,7 +4,7 @@ use url::Url;
 
 use crate::{Deck, DeckId};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Error {
     pub user_message: String,
     pub details: Option<String>,

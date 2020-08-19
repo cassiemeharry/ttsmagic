@@ -35,7 +35,9 @@ fn setup_logging() -> Result<()> {
 
 #[async_std::main]
 async fn main() -> Result<()> {
-    dotenv::dotenv()?;
+    if let Err(e) = dotenv::dotenv() {
+        eprintln!("Failed to get .env file: {}", e);
+    };
 
     setup_logging()?;
 
@@ -74,12 +76,24 @@ async fn main() -> Result<()> {
         let raw: &str = args.value_of("secrets_toml").unwrap();
         let path = std::path::Path::new(raw);
         if path.is_relative() {
-            async_std::fs::canonicalize(root.join(&path)).await?
+            let combined = root.join(&path);
+            async_std::fs::canonicalize(&combined)
+                .await
+                .with_context(|| {
+                    format!("Failed to canonicalize {:?}", combined.to_string_lossy())
+                })?
         } else {
-            async_std::fs::canonicalize(&path).await?
+            async_std::fs::canonicalize(&path)
+                .await
+                .with_context(|| format!("Failed to canonicalize {:?}", path.to_string_lossy()))?
         }
     };
-    crate::secrets::init_from_toml(secrets_toml_filename)?;
+    crate::secrets::init_from_toml(&secrets_toml_filename).with_context(|| {
+        format!(
+            "Failed to initialize secrets from {:?}",
+            secrets_toml_filename.to_string_lossy()
+        )
+    })?;
 
     match args.subcommand() {
         ("server", Some(server_args)) => {

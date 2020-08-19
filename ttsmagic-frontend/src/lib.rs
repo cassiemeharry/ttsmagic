@@ -5,6 +5,7 @@
 extern crate log;
 
 use std::rc::Rc;
+use ttsmagic_types::server_to_frontend as s2f;
 use wasm_bindgen::prelude::*;
 use yew::prelude::*;
 
@@ -17,6 +18,7 @@ pub struct Model {
     #[allow(unused)]
     link: ComponentLink<Self>,
     socket: Rc<ws::WebSocket>,
+    fatal_errors: Vec<s2f::Error>,
 }
 
 pub enum Msg {
@@ -38,7 +40,10 @@ fn make_ws_url() -> Result<url::Url, JsValue> {
             )))
         }
     };
-    let host = loc.host()?;
+    let mut host = loc.host()?;
+    if host.ends_with(":8123") {
+        host = host.replace(":8123", ":8124");
+    }
     let url_string = format!("{}//{}/ws/", ws_proto, host);
     url::Url::parse(&url_string)
         .map_err(|e| JsValue::from_str(&format!("Error parsing WebSocket URL: {}", e)))
@@ -55,12 +60,24 @@ impl Component for Model {
         Model {
             link,
             socket: Rc::new(socket),
+            fatal_errors: vec![],
         }
     }
 
     fn update(&mut self, msg: Self::Message) -> ShouldRender {
         match msg {
-            _ => true,
+            Msg::WS(ws_msg) => match &*ws_msg {
+                s2f::ServerToFrontendMessage::FatalError(e) => {
+                    let details = match &e.details {
+                        Some(details) => format!("\n{}", details),
+                        None => format!(""),
+                    };
+                    error!("Fatal error occurred! {}{}", &e.user_message, details);
+                    self.fatal_errors.push((*e).clone());
+                    true
+                }
+                _ => true,
+            },
         }
     }
 
@@ -68,12 +85,23 @@ impl Component for Model {
         html! {
             <div id="content">
                 <h1> {"MtG → Tabletop Simulator Deck Builder"} </h1>
+                <ul id="fatal-errors">
+                    { for self.fatal_errors.iter().map(|e| Self::view_fatal_error(&self, e)) }
+                </ul>
                 <deck_renderer::DeckRenderer socket=self.socket.clone() />
                 <deck_list::DeckList socket=self.socket.clone() />
                 <footer>
                   <a href="/logout/"> { "Sign out" } </a>
                 </footer>
             </div>
+        }
+    }
+}
+
+impl Model {
+    fn view_fatal_error(&self, e: &s2f::Error) -> Html {
+        html! {
+            <p> { &e.user_message } </p>
         }
     }
 }

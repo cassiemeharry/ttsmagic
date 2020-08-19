@@ -125,7 +125,7 @@ impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for 
     }
 
     async fn parse_deck(&self, db: &mut DB, redis: &mut R, unparsed: UnparsedDeck) -> Result<Deck> {
-        let title_selector = Selector::parse("span#deck_built_title").unwrap();
+        let title_selector = Selector::parse(".page_header > .section_title > span").unwrap();
         let main_card_rows_selector = Selector::parse("table.set_cards.main tr[id]").unwrap();
         let sideboard_card_rows_selector =
             Selector::parse("table.set_cards.sideboard tr[id]").unwrap();
@@ -139,24 +139,19 @@ impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for 
         let mut response = request.await.map_err(Error::msg)?;
         let html_string = response.body_string().await.map_err(Error::msg)?;
         let html = Html::parse_document(&html_string);
+        debug!("Got {:?} bytes of HTML", html_string.len());
 
         let title = {
             let mut matches = html.select(&title_selector).into_iter();
             let matched = matches
                 .next()
                 .ok_or_else(|| anyhow!("No match for {:?}", title_selector))?;
-            let text_sibling = matched
-                .next_sibling()
-                .ok_or_else(|| anyhow!("No next sibling node for {:?}", title_selector))?
-                .value()
-                .as_text()
-                .ok_or_else(|| {
-                    anyhow!(
-                        "Next sibling of match for {:?} is not a text node",
-                        title_selector
-                    )
-                })?;
-            text_sibling.to_string().trim().to_string()
+            let s = get_text(matched);
+            anyhow::ensure!(
+                !s.is_empty(),
+                "Found empty string where deck title was expected!"
+            );
+            s
         };
 
         let mut main_deck = HashMap::with_capacity(110);
@@ -192,9 +187,11 @@ impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for 
                         };
                     }
 
-                    let oracle_id = scryfall::oracle_id_by_name(db, &card_name.trim()).await?;
+                    let card_name = card_name.trim();
+                    debug!("Looking up oracle ID for Deckbox card {:?}", card_name);
+                    let oracle_id = scryfall::oracle_id_by_name(db, card_name).await?;
                     if let Some(_before) =
-                        $pile.insert(oracle_id, (card_name.trim().to_string(), card_count))
+                        $pile.insert(oracle_id, (card_name.to_string(), card_count))
                     {
                         warn!("Found card {} multiple times!", card_name);
                     }
@@ -288,8 +285,15 @@ impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for 
         let mut csv_reader = csv::Reader::from_reader(csv_cursor);
 
         for row_result in csv_reader.deserialize::<TappedOutCSVRow>() {
-            let row =
+            let mut row =
                 row_result.with_context(|| format!("Parsing TappedOut deck CSV from {}", url))?;
+
+            // TappedOut sometimes renders split card names with a single slash,
+            // while we canonicalize them with two slashes.
+            if row.name.contains(" / ") {
+                row.name = row.name.replace(" / ", " // ");
+            }
+
             let oracle_id = scryfall::oracle_id_by_name(db, &row.name)
                 .await
                 .with_context(|| format!("Loading TappedOut deck {}", self.slug))?;

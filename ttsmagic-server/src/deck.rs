@@ -165,6 +165,7 @@ ON CONFLICT (id) DO UPDATE SET user_id = $2, title = $3, url = $4;",
         main_deck: HashMap<ScryfallOracleId, (String, u8)>,
         sideboard: HashMap<ScryfallOracleId, (String, u8)>,
     ) -> Result<Deck> {
+        debug!("Saving cards for deck {:?}", title);
         notify_user(
             redis,
             self.user_id,
@@ -501,6 +502,7 @@ pub async fn load_deck(
         None => return Err(anyhow!("Failed to find loader matching url {}", url)),
     };
     let unparsed = UnparsedDeck::save(db, redis, user, loader.canonical_deck_url()).await?;
+    debug!("UnparsedDeck saved: {:?}", unparsed);
     let deck = loader
         .parse_deck(db, redis, unparsed)
         .await
