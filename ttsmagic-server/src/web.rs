@@ -25,6 +25,16 @@ impl<T, E: Into<anyhow::Error>> AnyhowTideCompat<T> for std::result::Result<T, E
     }
 }
 
+pub trait TideErrorCompat<T> {
+    fn tide_compat(self) -> anyhow::Result<T>;
+}
+
+impl<T> TideErrorCompat<T> for std::result::Result<T, tide::Error> {
+    fn tide_compat(self) -> anyhow::Result<T> {
+        self.map_err(|e| anyhow::Error::msg(e))
+    }
+}
+
 pub type AppState = Arc<AppStateInner>;
 
 #[derive(Debug)]

@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+    "ttsmagic-s3",
     "ttsmagic-server",
     "ttsmagic-types",
     "ttsmagic-frontend",

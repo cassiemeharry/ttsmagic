@@ -8,16 +8,15 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1"
-# async-log = "2"
 async-trait = "0.1"
 bytes = "0.5"
 chrono = "0.4"
+chrono-tz = "0.5"
 clap = "2"
 cookie = "*"
 csv = "1"
 dotenv = "0.15"
 failure = "0.1"
-# failure_derive = "0.1"
 futures = "0.3"
 futures_0_1 = { version = "0.1", package = "futures" }
 hex = "0.4"
@@ -39,12 +38,12 @@ serde_json = "1"
 serde_qs = "*"
 sha2 = "*"
 smallvec = "1"
-# steam-auth = "1"
-surf = "2.0.0-alpha.0"
+surf = "2.0.0-alpha.2"
 tempfile = "3"
 thiserror = "1"
 tide = "0.8"
 toml = "0.5"
+ttsmagic-s3 = { path= "../ttsmagic-s3" }
 ttsmagic-types = { path = "../ttsmagic-types" }
 
 [dependencies.async-std]
@@ -61,20 +60,6 @@ default-features = false
 features = ["aio", "async-std-comp"]
 git = "https://github.com/mitsuhiko/redis-rs"
 rev = "1ea0bd0c2e7b450eb5279995142fd64e5db0fa69"
-
-[dependencies.rusoto_core]
-default-features = false
-features = ["rustls"]
-version = "0.43"
-
-[dependencies.rusoto_credential]
-default-features = false
-version = "0.43"
-
-[dependencies.rusoto_s3]
-default-features = false
-features = ["rustls"]
-version = "0.43"
 
 [dependencies.rust-embed]
 features = ["compression", "interpolate-folder-path"]
@@ -93,15 +78,6 @@ version = "1"
 default-features = false
 features = ["chrono", "postgres", "runtime-async-std", "uuid"]
 version = "0.2"
-
-[dependencies.tokio]
-default-features = false
-features = ["rt-core", "dns", "net"]
-version = "0.2"
-
-#[dependencies.tokio_io_0_1]
-#package = "tokio-io"
-#version = "0.1"
 
 [dependencies.async-tungstenite]
 features = ["async-std-runtime"]

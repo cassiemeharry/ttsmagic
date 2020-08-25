@@ -1,7 +1,9 @@
+use anyhow::Result;
 use async_std::{
     pin::Pin,
     prelude::*,
-    task::{Context, Poll},
+    sync::Receiver,
+    task::{spawn, Context, JoinHandle, Poll},
 };
 use futures::{future::BoxFuture, sink::Sink};
 use std::collections::VecDeque;
@@ -87,26 +89,9 @@ impl<'a, T> futures::future::FusedFuture for AsyncStdStreamWrapperFuture<'a, T> 
     }
 }
 
-/// Adapts a Tokio-based future in a dedicated thread under the Tokio runtime.
-/// This is rather inefficent for short futures, but might be ok for I/O
-/// operations?
-#[inline(never)]
-pub async fn adapt_tokio_future<F>(future: F) -> F::Output
-where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    async_std::task::spawn_blocking(move || {
-        let mut runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-        debug!("Running Tokio future");
-        runtime.block_on(future)
-    })
-    .await
-}
-
 pub struct AsyncParallelStream<T> {
     parallelism: usize,
-    tasks: VecDeque<async_std::task::JoinHandle<T>>,
+    tasks: VecDeque<JoinHandle<T>>,
     waiting: VecDeque<BoxFuture<'static, T>>,
 }
 
@@ -166,5 +151,42 @@ impl<T: Send + Sync + 'static> Stream for AsyncParallelStream<T> {
                 Poll::Pending
             }
         }
+    }
+}
+
+pub struct AsyncPool {
+    tasks: Vec<JoinHandle<Result<()>>>,
+}
+
+impl AsyncPool {
+    pub fn new<T, F>(parallelism: usize, receiver: Receiver<T>, future_fn: F) -> Self
+    where
+        F: Fn(Receiver<T>) -> BoxFuture<'static, Result<()>> + Send + 'static,
+    {
+        let mut tasks = Vec::with_capacity(parallelism);
+        for _ in 0..parallelism {
+            tasks.push(spawn(future_fn(receiver.clone())));
+        }
+        AsyncPool { tasks }
+    }
+}
+
+impl Future for AsyncPool {
+    type Output = Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = Pin::into_inner(self);
+        while let Some(mut task) = this.tasks.pop() {
+            let task_pin = Pin::new(&mut task);
+            match task_pin.poll(cx) {
+                Poll::Pending => {
+                    this.tasks.push(task);
+                    return Poll::Pending;
+                }
+                Poll::Ready(Ok(())) => (),
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            }
+        }
+        Poll::Ready(Ok(()))
     }
 }

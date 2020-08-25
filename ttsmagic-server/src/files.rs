@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context as _, Result};
 use async_std::{
     fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::PathBuf,
     pin::Pin,
     prelude::*,
@@ -9,20 +9,12 @@ use async_std::{
     task::{spawn, spawn_blocking, Context, Poll},
 };
 use futures::future::BoxFuture;
-use http_0_2::StatusCode;
-use rusoto_core::{ByteStream, Region, RusotoError};
-use rusoto_credential::ProvideAwsCredentials;
-use rusoto_s3::{
-    util::{PreSignedRequest, PreSignedRequestOption},
-    GetObjectError, GetObjectRequest, HeadObjectError, HeadObjectRequest, PutObjectRequest,
-    S3Client, S3 as _,
-};
 use rust_embed::RustEmbed;
-use std::{collections::VecDeque, convert::TryInto, fmt};
-use tokio::io::AsyncReadExt;
+use std::fmt;
+use ttsmagic_s3 as s3;
 use url::Url;
 
-use crate::utils::adapt_tokio_future;
+use crate::{utils::AsyncPool, web::TideErrorCompat};
 
 // const FILES_FOLDER_RELATIVE: &'static str = "files";
 const FILES_URL_BASE: &'static str = "https://ttsmagic.cards/files/";
@@ -74,18 +66,16 @@ impl fmt::Display for FileBucket {
 }
 
 lazy_static::lazy_static! {
-    static ref REGION: Region = Region::Custom {
-        name: "us-east-1".to_owned(),
-        endpoint: "https://us-east-1.linodeobjects.com".to_owned(),
-    };
+    static ref REGION: s3::S3Region = s3::S3Region::new(
+        "us-east-1".to_owned(),
+        "https://us-east-1.linodeobjects.com",
+    ).unwrap();
 }
 
-fn make_s3_client() -> S3Client {
-    S3Client::new_with(
-        rusoto_core::request::HttpClient::new().unwrap(),
-        crate::secrets::linode_credentials(),
-        REGION.clone(),
-    )
+fn make_s3_client() -> s3::S3Client {
+    let creds = crate::secrets::linode_credentials().into();
+    let region: s3::S3Region = (&*REGION).clone();
+    s3::S3Client::new(region, creds)
 }
 
 #[derive(RustEmbed)]
@@ -121,73 +111,24 @@ impl MediaFile {
         .await
     }
 
-    // pub async fn path_exists<P: AsRef<Path>, R: AsRef<Path>>(root: R, name: P) -> Option<PathBuf> {
-    //     let rel_path = name.as_ref().to_owned();
-    //     let root = root.as_ref().join(FILES_FOLDER_RELATIVE);
-    //     let full_filename = root.join(&rel_path);
-    //     debug!(
-    //         "Looking for existence of path {} (from rel path {})",
-    //         full_filename.to_string_lossy(),
-    //         rel_path.to_string_lossy()
-    //     );
-    //     if full_filename.is_file().await {
-    //         Some(full_filename)
-    //     } else {
-    //         None
-    //     }
-    // }
-
     async fn try_get_file(
-        s3_client: S3Client,
+        s3_client: s3::S3Client,
         bucket: FileBucket,
-        name: String,
-    ) -> Result<Vec<u8>> {
-        // This function must return a Vec<u8> because returning a Tokio-backed
-        // stream ends up yielding zero bytes. I think this is because of the
-        // interaction between the two reactors.
-        let req = GetObjectRequest {
-            bucket: bucket.to_string(),
-            key: name.to_string(),
-            ..Default::default()
-        };
-        let resp = s3_client.get_object(req).await?;
-        let streaming_body = resp.body.ok_or_else(|| {
-            anyhow!(
-                "No streaming body found for succesful file response for path {}",
-                name
-            )
-        })?;
-
-        let body_size_guess: usize = resp
-            .content_length
-            .and_then(|x| x.try_into().ok())
-            .unwrap_or(10_000);
-        let mut async_reader = streaming_body.into_async_read();
-        let mut body = Vec::with_capacity(body_size_guess);
-        async_reader.read_to_end(&mut body).await?;
-        Ok(body)
+        name: &str,
+    ) -> Result<impl Read, surf::Error> {
+        let bucket = s3_client.use_bucket(bucket);
+        bucket.get_object(name).await
     }
 
     async fn file_exists(key: &str) -> Result<bool> {
         let s3_client = make_s3_client();
         let bucket = FileBucket::for_key(key)
             .ok_or_else(|| anyhow!("File {:?} does not match any bucket", key))?;
-        let head_req = HeadObjectRequest {
-            bucket: bucket.to_string(),
-            key: key.to_string(),
-            ..Default::default()
-        };
-        match s3_client.head_object(head_req).await {
-            Ok(_) => Ok(true),
-            Err(RusotoError::Service(HeadObjectError::NoSuchKey(_))) => Ok(false),
-            Err(RusotoError::Unknown(cause)) if cause.status == StatusCode::NOT_FOUND => Ok(false),
-            Err(e) => Err(anyhow::Error::from(e)).with_context(|| {
-                format!(
-                    "Failed to check whether file in bucket {} exists at key {:?}",
-                    bucket, key
-                )
-            }),
-        }
+        s3_client
+            .use_bucket(bucket)
+            .file_exists(key)
+            .await
+            .tide_compat()
     }
 
     pub async fn open_if_exists(name: &str) -> Result<Option<fs::File>> {
@@ -196,39 +137,27 @@ impl MediaFile {
             Some(b) => b,
             None => return Ok(None),
         };
-        let resp_future = Self::try_get_file(s3_client, bucket, name.to_string());
-        let body = match adapt_tokio_future(resp_future).await {
+        let body = match Self::try_get_file(s3_client, bucket, name).await {
             Ok(r) => r,
-            Err(e) => match e.downcast_ref::<RusotoError<GetObjectError>>() {
-                Some(RusotoError::Service(GetObjectError::NoSuchKey(_))) => return Ok(None),
-                _ => return Err(e),
-            },
+            Err(e) if e.status() as u16 == 404 => return Ok(None),
+            Err(e) => return Err(e).tide_compat(),
         };
         let mut f = spawn_blocking(move || tempfile::tempfile().map(fs::File::from)).await?;
-        f.write_all(&body).await?;
+        async_std::io::copy(body, &mut f).await?;
         f.flush().await?;
         f.seek(io::SeekFrom::Start(0)).await?;
         Ok(Some(f))
     }
 
-    pub async fn get_internal_url(name: &str) -> Result<Option<Url>> {
+    pub async fn get_internal_url(name: &str) -> Option<Url> {
+        let s3_client = make_s3_client();
         let bucket = match FileBucket::for_key(name) {
             Some(b) => b,
-            None => return Ok(None),
+            None => return None,
         };
-        let req = GetObjectRequest {
-            bucket: bucket.to_string(),
-            key: name.to_string(),
-            ..Default::default()
-        };
-        let presign_opts = PreSignedRequestOption {
-            expires_in: std::time::Duration::from_secs(30),
-        };
-        let region = &*REGION;
-        let creds = crate::secrets::linode_credentials().credentials().await?;
-        let raw_url = req.get_presigned_url(region, &creds, &presign_opts);
-        let presigned_url = Url::parse(&raw_url)?;
-        Ok(Some(presigned_url))
+        let duration = std::time::Duration::from_secs(30);
+        let presigned = s3_client.use_bucket(bucket).presign_url(name, duration);
+        Some(presigned)
     }
 
     pub async fn delete(_name: &str) -> Result<()> {
@@ -288,8 +217,8 @@ impl WritableMediaFile {
         self.upload().await
     }
 
-    async fn upload_file_tokio(
-        s3_client: S3Client,
+    async fn upload_file_internal(
+        s3_client: s3::S3Client,
         bucket: FileBucket,
         name: String,
         mut file: fs::File,
@@ -318,31 +247,24 @@ impl WritableMediaFile {
             );
         }
         let _ = file.seek(io::SeekFrom::Start(0)).await?;
-        let mut file_contents = Vec::new();
-        file.read_to_end(&mut file_contents).await?;
-        let len = file_contents.len();
-        let byte_stream_inner = async_std::stream::once(Ok(file_contents.into()));
-        let byte_stream = ByteStream::new(byte_stream_inner);
-        let req = PutObjectRequest {
-            bucket: bucket.to_string(),
-            key: key.clone(),
-            body: Some(byte_stream),
-            content_length: Some(len as u64 as i64),
-            ..Default::default()
-        };
-        let _resp = s3_client.put_object(req).await?;
+
+        s3_client
+            .use_bucket(bucket.to_string())
+            .put_object(&key, file)
+            .await
+            .tide_compat()?;
         Ok(key)
     }
 
     async fn upload(mut self) -> Result<MediaFile> {
         let s3_client = make_s3_client();
-        let resp_future = Self::upload_file_tokio(
+        let key = Self::upload_file_internal(
             s3_client,
             self.media_file.bucket,
             self.media_file.key,
             self.temp_file,
-        );
-        let key = adapt_tokio_future(resp_future).await?;
+        )
+        .await?;
         self.media_file.key = key;
         Ok(self.media_file)
     }
@@ -366,62 +288,7 @@ impl Write for WritableMediaFile {
     }
 }
 
-struct AsyncPool<T, E> {
-    parallelism: usize,
-    receiver: Receiver<T>,
-    future_fn: Box<dyn Fn(Receiver<T>) -> BoxFuture<'static, Result<(), E>> + Send + 'static>,
-    tasks: VecDeque<tokio::task::JoinHandle<Result<(), E>>>,
-    any_finished: bool,
-}
-
-impl<T: Send + 'static, E: Send + Sync + 'static> AsyncPool<T, E> {
-    fn new<F>(parallelism: usize, receiver: Receiver<T>, future_fn: F) -> Self
-    where
-        F: Fn(Receiver<T>) -> BoxFuture<'static, Result<(), E>> + Send + 'static,
-    {
-        AsyncPool {
-            parallelism,
-            receiver,
-            future_fn: Box::new(future_fn),
-            tasks: VecDeque::with_capacity(parallelism),
-            any_finished: false,
-        }
-    }
-}
-
-impl<T, E: Send + 'static> Future for AsyncPool<T, E> {
-    type Output = Result<(), E>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.tasks.is_empty() && !self.any_finished {
-            let handle = tokio::runtime::Handle::current();
-            for _ in 0..self.parallelism {
-                let spawned = handle.spawn((self.future_fn)(self.receiver.clone()));
-                self.tasks.push_back(spawned);
-            }
-        }
-
-        while let Some(mut handle) = self.tasks.pop_front() {
-            match Pin::new(&mut handle).poll(cx) {
-                Poll::Ready(Ok(Ok(()))) => {
-                    self.any_finished = true;
-                }
-                Poll::Ready(Ok(Err(e))) => return Poll::Ready(Err(e)),
-                Poll::Ready(Err(e)) => Err(e).unwrap(),
-                Poll::Pending => {
-                    self.tasks.push_back(handle);
-                    return Poll::Pending;
-                }
-            }
-        }
-        Poll::Ready(Ok(()))
-    }
-}
-
-async fn upload_files_tokio(
-    files: Receiver<(PathBuf, String)>,
-    delete_after_upload: bool,
-) -> Result<()> {
+async fn upload_files(files: Receiver<(PathBuf, String)>, delete_after_upload: bool) -> Result<()> {
     let s3_client = make_s3_client();
     while let Some((path, key)) = files.recv().await {
         let bucket = match FileBucket::for_key(&key) {
@@ -441,34 +308,17 @@ async fn upload_files_tokio(
             }
             continue;
         }
-        let mut file = fs::File::open(&path).await.with_context(|| {
+        let file = fs::File::open(&path).await.with_context(|| {
             format!(
                 "Failed to open file {:?} for upload",
                 path.to_string_lossy()
             )
         })?;
-        let mut file_contents = Vec::new();
-        let read_result_len = file.read_to_end(&mut file_contents).await;
-        drop(file);
-        if let Ok(l) = read_result_len.as_ref() {
-            assert_eq!(*l, file_contents.len());
-        }
-        let read_result_bytes = read_result_len.map(|_| file_contents.into());
-        let byte_stream_inner = async_std::stream::once(read_result_bytes);
-        let byte_stream = ByteStream::new(byte_stream_inner);
-        debug!("Uploading {:?} to bucket {}", key, bucket);
-        let put_req = PutObjectRequest {
-            bucket: bucket.to_string(),
-            key: key.clone(),
-            body: Some(byte_stream),
-            ..Default::default()
-        };
-        let _resp = s3_client.put_object(put_req).await.with_context(|| {
-            format!(
-                "Failed to upload file for key {:?} to bucket {}",
-                key, bucket
-            )
-        })?;
+        s3_client
+            .use_bucket(bucket.to_string())
+            .put_object(&key, file)
+            .await
+            .tide_compat()?;
         if delete_after_upload {
             fs::remove_file(&path).await.with_context(|| {
                 format!(
@@ -528,16 +378,11 @@ pub async fn upload_all(root: PathBuf, delete_after_upload: bool) -> Result<u64>
     info!("Uploading all files in {:?}", root.to_string_lossy());
 
     let (files_sender, files_receiver) = sync::channel(1);
-    let upload_future_fn = Box::new(move |recv| -> BoxFuture<Result<()>> {
-        let upload_future = upload_files_tokio(recv, delete_after_upload);
+    let upload_future_fn = move |recv| -> BoxFuture<Result<()>> {
+        let upload_future = upload_files(recv, delete_after_upload);
         Box::pin(upload_future)
-    });
-    let upload_pool = AsyncPool::new(
-        10,
-        files_receiver,
-        upload_future_fn as Box<dyn Fn(Receiver<_>) -> BoxFuture<'static, _> + Send + 'static>,
-    );
-    let upload_handle = spawn(adapt_tokio_future(upload_pool));
+    };
+    let upload_pool = AsyncPool::new(10, files_receiver, upload_future_fn);
 
     let cards_scanner = scan_folder(root.clone(), root.join("cards"), files_sender.clone());
     let page_scanner = scan_folder(root.clone(), root.join("page"), files_sender.clone());
@@ -546,11 +391,59 @@ pub async fn upload_all(root: PathBuf, delete_after_upload: bool) -> Result<u64>
     drop(files_sender);
 
     debug!("Waiting on upload task");
-    upload_handle.await.context("Upload task failed")?;
+    upload_pool.await?;
     debug!("Upload task finished, waiting on scanner tasks");
     let ((cards_uploaded, page_uploaded), pages_uploaded) =
         joined.await.context("Scan task failed")?;
     let files_uploaded = cards_uploaded + page_uploaded + pages_uploaded;
     debug!("Scanner tasks finished, uploaded {} files", files_uploaded);
     Ok(files_uploaded)
+}
+
+#[cfg(test)]
+mod tests {
+    fn init() {
+        let mut builder = pretty_env_logger::formatted_builder();
+        builder.is_test(true);
+
+        if let Ok(s) = std::env::var("RUST_LOG") {
+            builder.parse_filters(&s);
+        }
+
+        let _ = builder.try_init();
+    }
+
+    #[test]
+    fn get_example_file() {
+        use super::MediaFile;
+        use async_std::io::ReadExt as _;
+
+        const PREFIX_MAX_SIZE: usize = 250;
+
+        init();
+
+        async_std::task::block_on(async {
+            let path = "cards/b3/c2/b3c2bd44-4d75-4f61-89c0-1f1ba4d59ffa_png.png";
+            let opened_res = MediaFile::open_if_exists(path).await;
+            println!("File opened: {:?}", opened_res);
+            let mut opened = opened_res.unwrap().unwrap();
+            let mut buf = Vec::with_capacity(10_000);
+            opened.read_to_end(&mut buf).await.unwrap();
+            let as_bytes: &[u8] = &buf[0..buf.len().min(PREFIX_MAX_SIZE)];
+            let as_str: &str;
+            let prefix = match std::str::from_utf8(as_bytes) {
+                Ok(s) => {
+                    as_str = s;
+                    &as_str as &dyn std::fmt::Debug
+                }
+                Err(_) => &as_bytes as &dyn std::fmt::Debug,
+            };
+            assert!(
+                buf.len() > 10_000,
+                "file was truncated, len is {:?}, prefix is bytes are {:?}",
+                buf.len(),
+                prefix,
+            );
+        })
+    }
 }

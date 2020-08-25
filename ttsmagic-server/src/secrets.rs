@@ -1,12 +1,21 @@
 use anyhow::{Context, Result};
-use rusoto_credential::StaticProvider;
 use serde::Deserialize;
 use std::{fs::File, io::Read as _, path::Path, sync::RwLock};
+use ttsmagic_s3::S3Credentials;
 
-#[derive(Debug, Deserialize)]
-struct LinodeObjectStorageSecrets {
-    access_key: String,
-    secret_key: String,
+#[derive(Clone, Debug, Deserialize)]
+pub struct LinodeObjectStorageSecrets {
+    pub access_key: String,
+    pub secret_key: String,
+}
+
+impl Into<S3Credentials> for LinodeObjectStorageSecrets {
+    fn into(self) -> S3Credentials {
+        S3Credentials {
+            access_key: self.access_key,
+            secret_key: self.secret_key,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,13 +38,8 @@ impl Secrets {
         decoded_bytes
     }
 
-    fn linode_credentials(&self) -> StaticProvider {
-        StaticProvider::new(
-            self.linode_object_storage.access_key.clone(),
-            self.linode_object_storage.secret_key.clone(),
-            None,
-            None,
-        )
+    fn linode_credentials(&self) -> LinodeObjectStorageSecrets {
+        self.linode_object_storage.clone()
     }
 }
 
@@ -59,35 +63,35 @@ fn get_secret<F, T>(f: F) -> T
 where
     F: Fn(&Secrets) -> T,
 {
-        let l = SECRETS.read().unwrap();
-        match l.as_ref() {
-            Some(s) => f(s),
-            None => {
-                if cfg!(test) {
-                    drop(l);
-                    let cwd = std::env::current_dir().unwrap();
-                    let mut dir: &Path = &cwd;
-                    let mut toml_path;
-                    loop {
-                        toml_path = dir.join("secrets.toml");
-                        if toml_path.is_file() {
-                            break;
-                        }
-                        dir = dir.parent().expect("Failed to find secrets.toml file");
+    let l = SECRETS.read().unwrap();
+    match l.as_ref() {
+        Some(s) => f(s),
+        None => {
+            if cfg!(test) {
+                drop(l);
+                let cwd = std::env::current_dir().unwrap();
+                let mut dir: &Path = &cwd;
+                let mut toml_path;
+                loop {
+                    toml_path = dir.join("secrets.toml");
+                    if toml_path.is_file() {
+                        break;
                     }
-                    println!("Loading secrets from {:?}", toml_path.to_string_lossy());
-                    init_from_toml(toml_path).unwrap();
-                    let l = SECRETS.read().unwrap();
-                    let secrets = l.as_ref().unwrap();
-                    f(secrets)
-                } else {
-                    panic!(
-                        "Attempted to access secret {:?} before secrets were initialized!",
-                        stringify!($name)
-                    )
+                    dir = dir.parent().expect("Failed to find secrets.toml file");
                 }
+                println!("Loading secrets from {:?}", toml_path.to_string_lossy());
+                init_from_toml(toml_path).unwrap();
+                let l = SECRETS.read().unwrap();
+                let secrets = l.as_ref().unwrap();
+                f(secrets)
+            } else {
+                panic!(
+                    "Attempted to access secret {:?} before secrets were initialized!",
+                    stringify!($name)
+                )
             }
         }
+    }
 }
 
 macro_rules! secret_access {
@@ -100,4 +104,4 @@ macro_rules! secret_access {
 
 secret_access!(steam_api_key -> String);
 secret_access!(session_private_key -> [u8; 32]);
-secret_access!(linode_credentials -> StaticProvider);
+secret_access!(linode_credentials -> LinodeObjectStorageSecrets);
