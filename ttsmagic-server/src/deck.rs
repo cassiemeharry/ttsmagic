@@ -167,6 +167,36 @@ ON CONFLICT (id) DO UPDATE SET user_id = $2, title = $3, url = $4;",
         sideboard: HashMap<ScryfallOracleId, (String, u8)>,
     ) -> Result<Deck> {
         debug!("Saving cards for deck {:?}", title);
+        sqlx::query("UPDATE deck SET title = $1 WHERE id = $2;")
+            .bind(&title)
+            .bind(self.id.as_uuid())
+            .execute(db)
+            .await?;
+        sqlx::query("DELETE FROM deck_entry WHERE deck_id = $1;")
+            .bind(self.id.as_uuid())
+            .execute(db)
+            .await?;
+        let commanders_len = commanders.len();
+        let commanders_iter = commanders.into_iter().map(|(k, name)| (k, (name, 1)));
+        let mut commanders = HashMap::with_capacity(commanders_len);
+        for (card_id, (name, count)) in expand_cards(db, "commanders", commanders_iter).await? {
+            assert_eq!(count, 1);
+            let prev = commanders.insert(card_id, name);
+            assert!(prev.is_none());
+        }
+        let main_deck = expand_cards(db, "main deck", main_deck.into_iter()).await?;
+        let sideboard = expand_cards(db, "sideboard", sideboard.into_iter()).await?;
+
+        for (card_id, _) in commanders.iter() {
+            insert_deck_entry(db, self.id, *card_id, 1, "commander").await?;
+        }
+        for (card_id, (_, card_count)) in main_deck.iter() {
+            insert_deck_entry(db, self.id, *card_id, *card_count, "main_deck").await?;
+        }
+        for (card_id, (_, card_count)) in sideboard.iter() {
+            insert_deck_entry(db, self.id, *card_id, *card_count, "sideboard").await?;
+        }
+
         let color_identity = {
             let mut rows = sqlx::query(
                 "\
@@ -207,36 +237,6 @@ WHERE deck_id = $1;",
             },
         )
         .await?;
-
-        sqlx::query("UPDATE deck SET title = $1 WHERE id = $2;")
-            .bind(&title)
-            .bind(self.id.as_uuid())
-            .execute(db)
-            .await?;
-        sqlx::query("DELETE FROM deck_entry WHERE deck_id = $1;")
-            .bind(self.id.as_uuid())
-            .execute(db)
-            .await?;
-        let commanders_len = commanders.len();
-        let commanders_iter = commanders.into_iter().map(|(k, name)| (k, (name, 1)));
-        let mut commanders = HashMap::with_capacity(commanders_len);
-        for (card_id, (name, count)) in expand_cards(db, "commanders", commanders_iter).await? {
-            assert_eq!(count, 1);
-            let prev = commanders.insert(card_id, name);
-            assert!(prev.is_none());
-        }
-        let main_deck = expand_cards(db, "main deck", main_deck.into_iter()).await?;
-        let sideboard = expand_cards(db, "sideboard", sideboard.into_iter()).await?;
-
-        for (card_id, _) in commanders.iter() {
-            insert_deck_entry(db, self.id, *card_id, 1, "commander").await?;
-        }
-        for (card_id, (_, card_count)) in main_deck.iter() {
-            insert_deck_entry(db, self.id, *card_id, *card_count, "main_deck").await?;
-        }
-        for (card_id, (_, card_count)) in sideboard.iter() {
-            insert_deck_entry(db, self.id, *card_id, *card_count, "sideboard").await?;
-        }
 
         Ok(Deck {
             id: self.id,
