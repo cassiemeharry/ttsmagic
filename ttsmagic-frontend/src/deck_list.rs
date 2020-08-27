@@ -20,6 +20,95 @@ struct DeckInfo {
     status: DeckStatus,
 }
 
+impl DeckInfo {
+    fn bg_gradient_css(&self, heavy_bg: bool) -> String {
+        const BG: (u8, u8, u8) = (0xcc, 0xcc, 0xcc);
+        // # Bold colors
+        // const WHITE: (u8, u8, u8) = (249, 250, 244);
+        const BLUE: (u8, u8, u8) = (14, 104, 171);
+        const BLACK: (u8, u8, u8) = (21, 11, 0);
+        const RED: (u8, u8, u8) = (211, 32, 42);
+        const GREEN: (u8, u8, u8) = (0, 115, 62);
+        // # Pale colors
+        const WHITE: (u8, u8, u8) = (248, 231, 185);
+        // const BLUE: (u8, u8, u8) = (179, 206, 234);
+        // const BLACK: (u8, u8, u8) = (166, 159, 157);
+        // const RED: (u8, u8, u8) = (235, 159, 130);
+        // const GREEN: (u8, u8, u8) = (196, 211, 202);
+
+        let mut css = "background: #eee; background: linear-gradient(120deg".to_owned();
+        let mut current: f32 = 0.0;
+        fn append_section(
+            color: (u8, u8, u8),
+            width: f32,
+            alpha: f32,
+            current: &mut f32,
+            css: &mut String,
+        ) {
+            use std::fmt::Write;
+            let start = *current;
+            *current += width;
+            let end = *current;
+            write!(
+                css,
+                // ", #{r:02X}{g:02X}{b:02X} {start}%, #{r:02X}{g:02X}{b:02X} {end}%",
+                ", rgba({r},{g},{b},{a:.2}) {start:.0}% {end:.0}%",
+                a = alpha,
+                r = color.0,
+                g = color.1,
+                b = color.2,
+                start = start.min(100.0),
+                end = end.min(100.0),
+            )
+            .unwrap();
+        }
+        macro_rules! append_section {
+            ($color:expr, $width:expr, $alpha:expr) => {
+                append_section($color, $width, $alpha, &mut current, &mut css);
+            };
+        }
+
+        let ci = self.deck.color_identity;
+
+        let mut sections = 0;
+        if ci.white {
+            sections += 1;
+        }
+        if ci.blue {
+            sections += 1;
+        }
+        if ci.black {
+            sections += 1;
+        }
+        if ci.red {
+            sections += 1;
+        }
+        if ci.green {
+            sections += 1;
+        }
+
+        let bg_alpha: f32 = if heavy_bg { 0.3 } else { 0.1 };
+        // append_section!(BG, 10.0, bg_alpha);
+        macro_rules! append_color {
+            ($name:ident => $color:expr) => {
+                if ci.$name {
+                    append_section!($color, 20.0 / (sections as f32), 0.2);
+                }
+            };
+        }
+        append_color!(white => WHITE);
+        append_color!(blue => BLUE);
+        append_color!(black => BLACK);
+        append_color!(red => RED);
+        append_color!(green => GREEN);
+        current += 5.0;
+        append_section!(BG, 100.0, bg_alpha);
+        drop(append_section);
+        css.push_str(");");
+        css
+    }
+}
+
 pub enum Msg {
     DeleteDeck(DeckId),
     FromServer(Rc<S2FMsg>),
@@ -102,6 +191,7 @@ impl Component for DeckList {
                                 title: title.clone(),
                                 url: url.clone(),
                                 rendered: false,
+                                color_identity: Default::default(),
                             },
                         });
                         for di in decks.iter_mut() {
@@ -122,6 +212,7 @@ impl Component for DeckList {
                     deck_id,
                     title,
                     url,
+                    color_identity,
                 }) => match &mut self.decks {
                     RemoteResource::Loaded(ref mut decks) => {
                         for di in decks.iter_mut() {
@@ -129,6 +220,7 @@ impl Component for DeckList {
                                 di.status = DeckStatus::Loading;
                                 di.deck.title = title.clone();
                                 di.deck.url = url.clone();
+                                di.deck.color_identity = color_identity.clone();
                             }
                         }
                         true
@@ -197,7 +289,7 @@ impl Component for DeckList {
         let deck_list = match &self.decks {
             RemoteResource::Loading => html! { <p> { "Loading…" } </p> },
             RemoteResource::Loaded(decks) => {
-                html! { for decks.iter().map(|di| Self::view_deck(&self, di)) }
+                html! { for decks.iter().enumerate().map(|(i, di)| Self::view_deck(&self, di, (i % 2) == 1)) }
             }
             RemoteResource::Error(e) => {
                 html! { <p> { format!("Error loading decks: {:?}", e) } </p> }
@@ -213,7 +305,7 @@ impl Component for DeckList {
 }
 
 impl DeckList {
-    fn view_deck(&self, di: &DeckInfo) -> Html {
+    fn view_deck(&self, di: &DeckInfo, odd: bool) -> Html {
         let deck_id = di.deck.id;
         let download_link = if di.deck.rendered {
             html! {
@@ -226,27 +318,32 @@ impl DeckList {
         };
         let deck_name = html! {
             <>
-                { download_link }
-                { " " }
                 <a href=di.deck.url.to_string() target="_blank"> { "\u{1F5C3}" } </a>
+                { " " }
+                { download_link }
             </>
         };
-        let status_msg = match &di.status {
-            DeckStatus::Loading => "Loading…".to_string(),
-            DeckStatus::RenderingCards { complete, total } => {
-                format!("Rendered {} of {} cards", complete, total)
-            }
-            DeckStatus::RenderingPages { complete, total } => {
-                format!("Saved {} of {} pages", complete, total)
-            }
-            DeckStatus::Complete => String::new(),
+        let (status_msg, progress_bar) = match &di.status {
+            DeckStatus::Loading => ("Loading…".to_string(), html! { <> </> }),
+            DeckStatus::RenderingCards { complete, total } => (
+                format!("Loading cards"),
+                html! { <progress value={ complete } max={ total } /> },
+            ),
+            DeckStatus::RenderingPages { complete, total } => (
+                format!(
+                    "Saving page image{}",
+                    if total.get() == 1 { "" } else { "" }
+                ),
+                html! { <progress value={ complete } max={ total } /> },
+            ),
+            DeckStatus::Complete => (String::new(), html! { <> </> }),
             // DeckStatus::Error(Some(e)) => format!("Error rendering deck: {}", e),
             // DeckStatus::Error(None) => "Unknown error rendering deck".to_string(),
         };
         html! {
-            <li>
+            <li style={ di.bg_gradient_css(odd) }>
                 <span class="deck-name"> { deck_name } </span>
-                <span class="deck-status"> { status_msg } </span>
+                <span class="deck-status"> { status_msg } { progress_bar } </span>
                 <button style="flex: 0 0 auto" onclick=self.link.callback(move |_| Msg::RebuildDeck(deck_id))>
                   { "Rebuild" }
                 </button>

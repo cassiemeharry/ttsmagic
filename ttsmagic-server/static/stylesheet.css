@@ -78,6 +78,12 @@ code {
 #generated-decks li > span.deck-status {
     flex: 1 1 auto;
     text-align: center;
+    display: flex;
+    padding-left: 1em;
+}
+#generated-decks li > span.deck-status > progress {
+    flex: 1 1 auto;
+    margin-left: 1em;
 }
 #generated-decks li > button {
     flex: 0 0 auto;

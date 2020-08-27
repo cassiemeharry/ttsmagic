@@ -5,7 +5,7 @@ use redis::AsyncCommands;
 use serde_json::Value;
 use sqlx::{Executor, Postgres, Row};
 use std::{collections::HashMap, convert::TryInto};
-use ttsmagic_types::{server_to_frontend as s2f, DeckId, UserId};
+use ttsmagic_types::{server_to_frontend as s2f, DeckColorIdentity, DeckId, UserId};
 use url::Url;
 use uuid::Uuid;
 
@@ -16,6 +16,7 @@ use crate::{
     },
     tts::RenderedDeck,
     user::User,
+    utils::sqlx::PgArray1D,
 };
 
 mod loaders;
@@ -166,6 +167,35 @@ ON CONFLICT (id) DO UPDATE SET user_id = $2, title = $3, url = $4;",
         sideboard: HashMap<ScryfallOracleId, (String, u8)>,
     ) -> Result<Deck> {
         debug!("Saving cards for deck {:?}", title);
+        let color_identity = {
+            let mut rows = sqlx::query(
+                "\
+SELECT DISTINCT jsonb_array_elements_text(sc.json -> 'color_identity') AS color_identity
+FROM deck_entry
+INNER JOIN scryfall_card sc
+  ON ((sc.json ->> 'id')::uuid = deck_entry.card)
+WHERE deck_id = $1;",
+            )
+            .bind(self.id.as_uuid())
+            .fetch(db);
+            let mut ci = DeckColorIdentity::default();
+            while let Some(row) = rows.next().await {
+                let row = row?;
+                let color = row.get::<String, _>("color_identity");
+                match color.as_str() {
+                    "B" => ci.black = true,
+                    "U" => ci.blue = true,
+                    "G" => ci.green = true,
+                    "R" => ci.red = true,
+                    "W" => ci.white = true,
+                    other => warn!(
+                        "Got an unexpected color when parsing deck {:?}'s color identity: {:?}",
+                        self.id, other
+                    ),
+                }
+            }
+            ci
+        };
         notify_user(
             redis,
             self.user_id,
@@ -173,6 +203,7 @@ ON CONFLICT (id) DO UPDATE SET user_id = $2, title = $3, url = $4;",
                 deck_id: self.id,
                 title: title.clone(),
                 url: self.url.clone(),
+                color_identity,
             },
         )
         .await?;
@@ -436,19 +467,59 @@ pub async fn get_decks_for_user(
     db: &mut impl Executor<Database = Postgres>,
     user: UserId,
 ) -> Result<Vec<ttsmagic_types::Deck>> {
-    let mut rows = sqlx::query("SELECT id, user_id, title, url, (json IS NOT NULL) as rendered FROM deck WHERE user_id = $1;")
-            .bind(user.as_queryable())
-            .fetch(db);
+    let mut rows = sqlx::query(
+        "\
+SELECT id, user_id, title, url, (json IS NOT NULL) as rendered
+  , array(
+      SELECT DISTINCT jsonb_array_elements_text(sc.json -> 'color_identity') AS color_identity
+      FROM deck_entry
+      INNER JOIN scryfall_card sc
+        ON ((sc.json ->> 'id')::uuid = deck_entry.card) WHERE deck_entry.deck_id = deck.id
+    ) :: text[] AS color_identity
+FROM deck
+WHERE user_id = $1;",
+    )
+    .bind(user.as_queryable())
+    .fetch(db);
     let mut decks = vec![];
     while let Some(row) = rows.next().await {
         let row = row?;
+        let deck_id = row.get::<Uuid, _>("id");
         let url: String = row.get("url");
+        let color_identity = {
+            let raw_identity = row.get::<PgArray1D<String>, _>("color_identity");
+            warn!("TODO: extract color identity from {:?}", raw_identity);
+            let mut ci = DeckColorIdentity::default();
+            for color_str in raw_identity.get() {
+                if color_str.len() != 1 {
+                    warn!(
+                        "Got an unexpected color value when parsing deck {:?}'s color identity: {:?}",
+                        deck_id, color_str
+                    );
+                    continue;
+                }
+                let color: char = color_str.chars().next().unwrap();
+                match color {
+                    'B' => ci.black = true,
+                    'U' => ci.blue = true,
+                    'G' => ci.green = true,
+                    'R' => ci.red = true,
+                    'W' => ci.white = true,
+                    other => warn!(
+                        "Got an unexpected character when parsing a deck's color identity: {:?}",
+                        other
+                    ),
+                }
+            }
+            ci
+        };
         decks.push(ttsmagic_types::Deck {
-            id: DeckId::from(row.get::<Uuid, _>("id")),
+            id: DeckId::from(deck_id),
             // user_id: UserId::from(row.get::<i64, _>("user_id")),
             title: row.get("title"),
             url: Url::parse(&url)?,
             rendered: row.get("rendered"),
+            color_identity,
         });
     }
     decks.sort_by_key(|d| (d.title.clone(), d.url.clone()));

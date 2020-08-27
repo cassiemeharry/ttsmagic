@@ -8,6 +8,7 @@ use async_std::{
 use futures::{future::BoxFuture, Sink};
 
 mod async_par_stream;
+pub mod sqlx;
 
 pub use async_par_stream::AsyncParallelStream;
 

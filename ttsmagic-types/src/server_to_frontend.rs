@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroU16;
 use url::Url;
 
-use crate::{Deck, DeckId};
+use crate::{Deck, DeckColorIdentity, DeckId};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Error {
@@ -37,6 +37,7 @@ pub enum Notification {
         deck_id: DeckId,
         title: String,
         url: Url,
+        color_identity: DeckColorIdentity,
     },
     Error(Error),
     RenderProgress {

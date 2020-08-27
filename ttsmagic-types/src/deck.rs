@@ -41,6 +41,15 @@ impl fmt::Display for DeckId {
     }
 }
 
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Deserialize, Serialize)]
+pub struct DeckColorIdentity {
+    pub black: bool,
+    pub blue: bool,
+    pub green: bool,
+    pub red: bool,
+    pub white: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 pub struct Deck {
     pub id: DeckId,
@@ -48,4 +57,6 @@ pub struct Deck {
     pub title: String,
     pub url: Url,
     pub rendered: bool,
+    #[serde(default)]
+    pub color_identity: DeckColorIdentity,
 }
