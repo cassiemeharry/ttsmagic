@@ -21,7 +21,8 @@ struct DeckInfo {
 }
 
 impl DeckInfo {
-    fn bg_gradient_css(&self, heavy_bg: bool) -> String {
+    fn bg_gradient_css(&self) -> String {
+        const BG_ALPHA: f32 = 0.2;
         const BG: (u8, u8, u8) = (0xcc, 0xcc, 0xcc);
         // # Bold colors
         // const WHITE: (u8, u8, u8) = (249, 250, 244);
@@ -38,22 +39,23 @@ impl DeckInfo {
 
         let mut css = "background: #eee; background: linear-gradient(120deg".to_owned();
         let mut current: f32 = 0.0;
-        fn append_section(
-            color: (u8, u8, u8),
-            width: f32,
-            alpha: f32,
-            current: &mut f32,
-            css: &mut String,
-        ) {
+        fn append_section(color: (u8, u8, u8), width: f32, current: &mut f32, css: &mut String) {
             use std::fmt::Write;
-            let start = *current;
+            let start = if *current > 0.0 {
+                *current + (width / 4.0)
+            } else {
+                *current
+            };
             *current += width;
-            let end = *current;
+            let end = if *current >= 100.0 {
+                100.0
+            } else {
+                *current - (width / 4.0)
+            };
             write!(
                 css,
-                // ", #{r:02X}{g:02X}{b:02X} {start}%, #{r:02X}{g:02X}{b:02X} {end}%",
                 ", rgba({r},{g},{b},{a:.2}) {start:.0}% {end:.0}%",
-                a = alpha,
+                a = BG_ALPHA,
                 r = color.0,
                 g = color.1,
                 b = color.2,
@@ -63,8 +65,8 @@ impl DeckInfo {
             .unwrap();
         }
         macro_rules! append_section {
-            ($color:expr, $width:expr, $alpha:expr) => {
-                append_section($color, $width, $alpha, &mut current, &mut css);
+            ($color:expr, $width:expr) => {
+                append_section($color, $width, &mut current, &mut css);
             };
         }
 
@@ -87,23 +89,22 @@ impl DeckInfo {
             sections += 1;
         }
 
-        let bg_alpha: f32 = if heavy_bg { 0.3 } else { 0.1 };
-        // append_section!(BG, 10.0, bg_alpha);
-        macro_rules! append_color {
-            ($name:ident => $color:expr) => {
-                if ci.$name {
-                    append_section!($color, 20.0 / (sections as f32), 0.2);
-                }
-            };
+        if sections == 0 {
+            append_section!(BG, 100.0);
+        } else {
+            macro_rules! append_color {
+                ($name:ident => $color:expr) => {
+                    if ci.$name {
+                        append_section!($color, 100.0 / (sections as f32));
+                    }
+                };
+            }
+            append_color!(white => WHITE);
+            append_color!(blue => BLUE);
+            append_color!(red => RED);
+            append_color!(black => BLACK);
+            append_color!(green => GREEN);
         }
-        append_color!(white => WHITE);
-        append_color!(blue => BLUE);
-        append_color!(black => BLACK);
-        append_color!(red => RED);
-        append_color!(green => GREEN);
-        current += 5.0;
-        append_section!(BG, 100.0, bg_alpha);
-        drop(append_section);
         css.push_str(");");
         css
     }
@@ -289,7 +290,7 @@ impl Component for DeckList {
         let deck_list = match &self.decks {
             RemoteResource::Loading => html! { <p> { "Loading…" } </p> },
             RemoteResource::Loaded(decks) => {
-                html! { for decks.iter().enumerate().map(|(i, di)| Self::view_deck(&self, di, (i % 2) == 1)) }
+                html! { for decks.iter().enumerate().map(|(i, di)| Self::view_deck(&self, di)) }
             }
             RemoteResource::Error(e) => {
                 html! { <p> { format!("Error loading decks: {:?}", e) } </p> }
@@ -305,7 +306,7 @@ impl Component for DeckList {
 }
 
 impl DeckList {
-    fn view_deck(&self, di: &DeckInfo, odd: bool) -> Html {
+    fn view_deck(&self, di: &DeckInfo) -> Html {
         let deck_id = di.deck.id;
         let download_link = if di.deck.rendered {
             html! {
@@ -341,7 +342,7 @@ impl DeckList {
             // DeckStatus::Error(None) => "Unknown error rendering deck".to_string(),
         };
         html! {
-            <li style={ di.bg_gradient_css(odd) }>
+            <li style={ di.bg_gradient_css() }>
                 <span class="deck-name"> { deck_name } </span>
                 <span class="deck-status"> { status_msg } { progress_bar } </span>
                 <button style="flex: 0 0 auto" onclick=self.link.callback(move |_| Msg::RebuildDeck(deck_id))>
