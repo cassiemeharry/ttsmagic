@@ -2,7 +2,7 @@ use async_std::{
     net::{IpAddr, TcpListener, TcpStream},
     prelude::*,
     sync::Arc,
-    task::{block_on, spawn},
+    task::{block_on, spawn, spawn_blocking},
 };
 // use async_std_tokio_compat::*;
 use anyhow::{anyhow, ensure, Context, Result};
@@ -16,7 +16,6 @@ use futures::{
     future::BoxFuture,
     sink::{Sink, SinkExt as _},
 };
-use http_0_2::status::StatusCode;
 use redis::AsyncCommands;
 use sqlx::{Executor, Postgres};
 use ttsmagic_types::{frontend_to_server as f2s, server_to_frontend as s2f};
@@ -198,7 +197,7 @@ async fn handle_incoming_message(
             handle_sink.send(msg).await?;
         }
         f2s::FrontendToServerMessage::RenderDeck { url } => {
-            async_std::task::spawn_blocking::<_, Result<()>>(move || {
+            spawn_blocking::<_, Result<()>>(move || {
                 block_on(async move {
                     let mut deck =
                         crate::deck::load_deck(&mut db_conn, &mut redis_conn, &user, url)
@@ -215,8 +214,39 @@ async fn handle_incoming_message(
 }
 
 struct ServerCallback {
-    state: AppState,
-    user: Option<User>,
+    headers: Option<http_0_2::HeaderMap>,
+}
+
+impl ServerCallback {
+    async fn get_user(&self, state: &AppState) -> Option<User> {
+        let headers = match self.headers.as_ref() {
+            Some(hs) => hs,
+            None => {
+                error!("Tried to get user from ServerCallback without callback being run");
+                return None;
+            }
+        };
+        let mut db_conn = match state.db_pool.acquire().await {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Error getting DB connection in WebSocket callback: {}", e);
+                return None;
+            }
+        };
+        let mut redis_conn = match state.redis.get_async_connection().await {
+            Ok(c) => c,
+            Err(e) => {
+                error!(
+                    "Error getting Redis connection in WebSocket callback: {}",
+                    e
+                );
+                return None;
+            }
+        };
+
+        let session_get_tuple = (&mut db_conn, &mut redis_conn, headers);
+        session_get_tuple.get_session().await.and_then(|s| s.user)
+    }
 }
 
 impl<'a> tungstenite::handshake::server::Callback for &'a mut ServerCallback {
@@ -225,37 +255,7 @@ impl<'a> tungstenite::handshake::server::Callback for &'a mut ServerCallback {
         request: &http_0_2::Request<()>,
         response: http_0_2::Response<()>,
     ) -> std::result::Result<http_0_2::Response<()>, http_0_2::Response<Option<String>>> {
-        let err_response: std::result::Result<_, http_0_2::Response<Option<String>>> = {
-            let mut resp = http_0_2::Response::new(None);
-            *resp.status_mut() = StatusCode::FORBIDDEN;
-            Err(resp)
-        };
-
-        // I wish this was an async function so this didn't block the main thread...
-        let mut db_conn = match block_on(self.state.db_pool.acquire()) {
-            Ok(c) => c,
-            Err(e) => {
-                error!("Error getting DB connection in WebSocket callback: {}", e);
-                return err_response;
-            }
-        };
-        let mut redis_conn = match block_on(self.state.redis.get_async_connection()) {
-            Ok(c) => c,
-            Err(e) => {
-                error!(
-                    "Error getting Redis connection in WebSocket callback: {}",
-                    e
-                );
-                return err_response;
-            }
-        };
-        let session_get_tuple = (&mut db_conn, &mut redis_conn, request);
-        let user = match block_on(session_get_tuple.get_session()).and_then(|s| s.user) {
-            Some(u) => u,
-            None => return err_response,
-        };
-
-        self.user = Some(user);
+        self.headers = Some(request.headers().clone());
         Ok(response)
     }
 }
@@ -271,10 +271,7 @@ pub async fn listen((host, port): (IpAddr, u16), state: AppState) -> Result<()> 
 
         let stream_state = state.clone();
         spawn(async move {
-            let mut callback = ServerCallback {
-                state: stream_state.clone(),
-                user: None,
-            };
+            let mut callback = ServerCallback { headers: None };
             let ws_stream = match accept_hdr_async(stream, &mut callback).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -285,10 +282,10 @@ pub async fn listen((host, port): (IpAddr, u16), state: AppState) -> Result<()> 
                     return;
                 }
             };
-            let user = match callback.user {
+            let user = match callback.get_user(&stream_state).await {
                 Some(u) => u,
                 None => {
-                    error!("Incoming websocket validation passed, but it didn't set a `user` value. This is a bug.");
+                    warn!("Dropping a websocket connection without a valid user");
                     return;
                 }
             };

@@ -184,22 +184,21 @@ pub trait SessionClearExt<'a>: Sized {
     fn clear_session(self) -> BoxFuture<'a, Result<Self>>;
 }
 
-impl<'a, DB: Executor<Database = Postgres> + Send, T: Send + Sync> SessionGetExt<'a>
+impl<'a, DB: Executor<Database = Postgres> + Send> SessionGetExt<'a>
     for (
         &'a mut DB,
         &'a mut redis::aio::Connection,
-        &'a http_0_2::Request<T>,
+        &'a http_0_2::HeaderMap,
     )
 {
     fn get_session(self) -> BoxFuture<'a, Option<Session>> {
-        async fn inner<T>(
-            (db, redis, request): (
+        async fn inner(
+            (db, redis, headers): (
                 &mut impl Executor<Database = Postgres>,
                 &mut redis::aio::Connection,
-                &http_0_2::Request<T>,
+                &http_0_2::HeaderMap,
             ),
         ) -> Result<Option<Session>> {
-            let headers = request.headers();
             let cookie_header = headers
                 .get("Cookie")
                 .ok_or_else(|| anyhow!("Cookie header is missing"))
