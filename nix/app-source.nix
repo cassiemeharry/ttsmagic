@@ -16,8 +16,7 @@ let
     buildPhase = "true";
     installPhase = ''
       mkdir "$out"
-      cp -r ttsmagic-{frontend,types,server} Cargo.{toml,lock} "$out"
-      ls -l "$out"
+      cp -r ttsmagic-{frontend,types,s3,server} Cargo.{toml,lock} "$out"
     '';
   };
 
@@ -25,11 +24,11 @@ let
 
   opts =
     if selection == "frontend" then
-      { remove = [ "ttsmagic-server" ]; }
+      { remove = [ "ttsmagic-s3" "ttsmagic-server" ]; }
     else if selection == "server" then
       { remove = [ "ttsmagic-frontend" ]; }
     else if selection == "types" then
-      { remove = [ "ttsmagic-frontend" "ttsmagic-server" ]; }
+      { remove = [ "ttsmagic-frontend" "ttsmagic-s3" "ttsmagic-server" ]; }
     else if selection == null then
       { remove = []; }
     else

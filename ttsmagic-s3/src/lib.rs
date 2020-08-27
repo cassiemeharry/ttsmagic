@@ -87,7 +87,7 @@ impl<C: HttpClient> surf::middleware::Middleware<C> for SignedContentMiddleware 
             let result = next.run(req, client).await;
             match result {
                 Ok(resp) => {
-                    debug!("Request finished, status was {:?}", resp.status());
+                    trace!("Request finished, status was {:?}", resp.status());
                     Ok(resp)
                 }
                 Err(e) => {
@@ -104,9 +104,10 @@ async fn make_rusoto_signedrequest(
     region: &S3Region,
     request: &mut surf::middleware::Request,
 ) -> Result<rusoto_signature::signature::SignedRequest, Error> {
-    debug!(
+    trace!(
         "Adding AWS4 signature for region {:?} and creds {:?}",
-        region, creds
+        region,
+        creds
     );
 
     let original_url = request.url();
@@ -121,7 +122,7 @@ async fn make_rusoto_signedrequest(
         name: region.name.clone(),
         endpoint: region.endpoint.to_string(),
     };
-    debug!("Creating signed S3 request for {} {}", method, path);
+    trace!("Creating signed S3 request for {} {}", method, path);
     let mut signed = rusoto_signature::signature::SignedRequest::new(&method, "s3", &region, path);
     signed.scheme = Some(original_url.scheme().to_owned());
     signed.hostname = original_url.host_str().map(str::to_owned);
@@ -155,7 +156,7 @@ async fn make_rusoto_signedrequest(
     );
 
     signed.sign(&rusoto_creds);
-    debug!("Rusoto signed request: {:?}", signed);
+    trace!("Rusoto signed request: {:?}", signed);
     Ok(signed)
 }
 
@@ -176,7 +177,7 @@ fn generate_presigned_url(
         name: region.name.clone(),
         endpoint: region.endpoint.to_string(),
     };
-    debug!("Creating pre-signed S3 URL for {} {}", method, original_url);
+    trace!("Creating pre-signed S3 URL for {} {}", method, original_url);
     let mut signed = rusoto_signature::signature::SignedRequest::new(&method, "s3", &region, path);
     signed.scheme = Some(original_url.scheme().to_owned());
     signed.hostname = original_url.host_str().map(str::to_owned);
@@ -190,7 +191,7 @@ fn generate_presigned_url(
     );
 
     let presigned_str = signed.generate_presigned_url(&rusoto_creds, &live_duration, false);
-    debug!("Rusoto pre-signed URL: {:?}", presigned_str);
+    trace!("Rusoto pre-signed URL: {:?}", presigned_str);
     let presigned_url = presigned_str.parse().unwrap();
     presigned_url
 }
@@ -272,7 +273,7 @@ impl S3Client {
     /// Focus on a specific S3 bucket.
     pub fn use_bucket(&self, name: impl ToString) -> S3BucketHandle {
         let bucket_name = name.to_string();
-        debug!("Using bucket {:?}", bucket_name);
+        trace!("Using bucket {:?}", bucket_name);
         S3BucketHandle {
             bucket_name,
             client: self,
@@ -302,15 +303,16 @@ impl S3BucketHandle<'_> {
         }
         let mut url = self.client.region.endpoint.clone();
         url.set_path(&format!("/{}/{}", self.bucket_name, key));
-        debug!("S3 URL: {:?}", url);
+        trace!("S3 URL: {:?}", url);
         url
     }
 
     /// Check whether a file exists (using a HEAD request).
     pub async fn file_exists(&self, key: &str) -> Result<bool> {
-        debug!(
+        trace!(
             "Checking if file {:?} exists in bucket {:?}",
-            key, self.bucket_name
+            key,
+            self.bucket_name
         );
         let url = self.file_url(key);
         let req = self.client.signed_request(self.client.client.head(url));
@@ -327,7 +329,7 @@ impl S3BucketHandle<'_> {
 
     /// Download a file.
     pub async fn get_object(&self, key: &str) -> Result<impl Read> {
-        debug!("Getting file {:?} from bucket {:?}", key, self.bucket_name);
+        trace!("Getting file {:?} from bucket {:?}", key, self.bucket_name);
         let url = self.file_url(key);
         let req = self.client.signed_request(self.client.client.get(url));
         let resp = req.await?;
@@ -351,9 +353,10 @@ impl S3BucketHandle<'_> {
     /// Generate a pre-signed URL for a given file. This URL will be valid until
     /// `live_duration` seconds have passed.
     pub fn presign_url(&self, key: &str, live_duration: Duration) -> Url {
-        debug!(
+        trace!(
             "Generating a pre-signed URL for file {:?} in bucket {:?}",
-            key, self.bucket_name
+            key,
+            self.bucket_name
         );
         let url = self.file_url(key);
         generate_presigned_url(

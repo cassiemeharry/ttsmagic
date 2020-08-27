@@ -33,7 +33,7 @@ check-deps:
 deploy:
 > output_filename="ttsmagic-docker-image.tar.gz"
 > [[ -h "$$output_filename" ]] && rm "$$output_filename"
-> cargo test
+> ( set +x && export $$(cat .env | xargs) && cargo test )
 > time nix-build nix/docker-image.nix -o "$$output_filename" --show-trace
 > time scp "$$output_filename" $(DEPLOY_HOST):"/ttsmagic/$$output_filename"
 > rm "$$output_filename"
