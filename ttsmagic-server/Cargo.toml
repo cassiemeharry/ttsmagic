@@ -90,3 +90,7 @@ version = "2"
 [dependencies.uuid]
 features = ["serde", "v4"]
 version = "0.8"
+
+[dev-dependencies]
+itertools = "0.9"
+pretty_assertions = "*"

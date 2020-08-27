@@ -5,8 +5,11 @@ use async_std::{
     sync::Receiver,
     task::{spawn, Context, JoinHandle, Poll},
 };
-use futures::{future::BoxFuture, sink::Sink};
-use std::collections::VecDeque;
+use futures::{future::BoxFuture, Sink};
+
+mod async_par_stream;
+
+pub use async_par_stream::AsyncParallelStream;
 
 pub struct AsyncStdStreamWrapper<S> {
     stream: S,
@@ -86,71 +89,6 @@ impl<'a, T> async_std::future::Future for AsyncStdStreamWrapperFuture<'a, T> {
 impl<'a, T> futures::future::FusedFuture for AsyncStdStreamWrapperFuture<'a, T> {
     fn is_terminated(&self) -> bool {
         *self.terminated
-    }
-}
-
-pub struct AsyncParallelStream<T> {
-    parallelism: usize,
-    tasks: VecDeque<JoinHandle<T>>,
-    waiting: VecDeque<BoxFuture<'static, T>>,
-}
-
-impl<T: Send + Sync + 'static> AsyncParallelStream<T> {
-    pub fn new(
-        parallelism: usize,
-        futures: impl IntoIterator<Item = BoxFuture<'static, T>>,
-    ) -> Self {
-        let futures = futures.into_iter();
-        let mut tasks = VecDeque::with_capacity(parallelism);
-        let mut waiting =
-            VecDeque::with_capacity(futures.size_hint().0.saturating_sub(parallelism));
-        for future in futures {
-            if tasks.len() < parallelism {
-                tasks.push_back(async_std::task::spawn(future));
-            } else {
-                waiting.push_back(future);
-            }
-        }
-        Self {
-            parallelism,
-            tasks,
-            waiting,
-        }
-    }
-}
-
-impl<T: Send + Sync + 'static> Stream for AsyncParallelStream<T> {
-    type Item = T;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this: &mut Self = Pin::into_inner(self);
-        let mut front = match this.tasks.pop_front() {
-            None => {
-                assert!(this.waiting.is_empty());
-                return Poll::Ready(None);
-            }
-            Some(front) => front,
-        };
-        let front_pinned = Pin::new(&mut front);
-        match front_pinned.poll(cx) {
-            Poll::Ready(item) => {
-                // This future has resolved. We should drop it and move futures
-                // from `waiting` to `tasks`.
-                while !this.waiting.is_empty() && this.tasks.len() < this.parallelism {
-                    // unwrap: we know this will succeed because of the
-                    // !is_empty() call directly before it.
-                    let next = this.waiting.pop_front().unwrap();
-                    let next_handle = async_std::task::spawn(next);
-                    this.tasks.push_back(next_handle);
-                }
-                Poll::Ready(Some(item))
-            }
-            Poll::Pending => {
-                // Not ready, so put it back for now.
-                this.tasks.push_front(front);
-                Poll::Pending
-            }
-        }
     }
 }
 
