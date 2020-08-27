@@ -9,6 +9,7 @@ let
     rustc = rust;
     cargo = rust;
   };
+  wasm-bindgen = import ./nix/wasm-bindgen.nix { inherit sources; };
   cargo-udeps = naersk.buildPackage {
     name = "cargo-udeps";
     version = "0.1.11";
@@ -29,6 +30,7 @@ pkgs.mkShell {
   '';
   buildInputs = [
     cargo-udeps
+    pkgs.binaryen
     pkgs.colordiff
     pkgs.file
     pkgs.inotify-tools
@@ -42,5 +44,6 @@ pkgs.mkShell {
     pkgs.time
     pkgs.valgrind
     rust
+    wasm-bindgen
   ];
 }

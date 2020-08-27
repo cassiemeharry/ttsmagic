@@ -5,7 +5,7 @@
 /secrets
 /target
 /*.json
-/ttsmagic-server/static/ttsmagic_frontend.js
+/ttsmagic-server/static/ttsmagic_frontend.*
 /ttsmagic-server/static/ttsmagic_frontend_bg.wasm
 secrets.toml
 .env
