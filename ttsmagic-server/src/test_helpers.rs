@@ -1,145 +1,31 @@
+#![cfg(test)]
 #![allow(unused)]
 
 use async_std::prelude::*;
+use futures::future::BoxFuture;
 
-// use async_std::{pin::Pin, prelude::*};
-// use futures::future::BoxFuture;
-// use sqlx::{
-//     postgres::{PgArguments, PgRow},
-//     Executor, Postgres,
-// };
-// use std::{any::Any, fmt};
+pub fn init_logging() {
+    let mut builder = pretty_env_logger::formatted_timed_builder();
+    builder.is_test(true);
 
-// pub enum MockPostgresResponse {
-//     Unit,
-//     Execute(u64),
-//     Single(Option<PgRow>),
-//     Multiple(Vec<PgRow>),
-//     Error(sqlx::Error),
-// }
+    if let Ok(s) = std::env::var("RUST_LOG") {
+        builder.parse_filters(&s);
+    }
 
-// impl fmt::Debug for MockPostgresResponse {
-//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-//         match self {
-//             Self::Unit => write!(f, "Unit"),
-//             Self::Execute(n) => write!(f, "Execute({:?})", n),
-//             Self::Single(Some(_row)) => write!(f, "Single(Some(_))"),
-//             Self::Single(None) => write!(f, "Single(None)"),
-//             Self::Multiple(rows) => write!(f, "Multiple({} rows)", rows.len()),
-//             Self::Error(e) => write!(f, "Error({})", e),
-//         }
-//     }
-// }
+    let _ = builder.try_init();
+}
 
-// struct MockPostgresQueryAndResponse {
-//     query: String,
-//     params: Option<PgArguments>,
-//     response: sqlx::Result<MockPostgresResponse>,
-// }
-
-// pub struct MockPostgresConn {
-//     expected: Vec<MockPostgresQueryAndResponse>,
-// }
-
-// impl MockPostgresConn {
-//     fn run_fake_query_with_args(
-//         &mut self,
-//         query: &str,
-//         args: PgArguments,
-//     ) -> sqlx::Result<MockPostgresResponse> {
-//         let expected = match self.expected.pop() {
-//             Some(e) => e,
-//             None => panic!(
-//                 "Ran out of expected queries in MockPostgresConn for query {:?}",
-//                 query
-//             ),
-//         };
-//         if query != &expected.query {
-//             panic!(
-//                 "Query is incorrect! Expected {:?}, got {:?}",
-//                 expected.query, query
-//             );
-//         }
-//         // if &args != expected.params {
-//         //     panic!("Query parameters are incorrect!");
-//         // }
-//         expected.response
-//     }
-// }
-
-// impl Executor for MockPostgresConn {
-//     type Database = Postgres;
-
-//     fn send<'e, 'q>(&'e mut self, command: &'q str) -> BoxFuture<'e, sqlx::Result<()>>
-//     where
-//         'q: 'e,
-//     {
-//         todo!()
-//     }
-
-//     fn fetch<'e, 'q>(
-//         &'e mut self,
-//         command: &'q str,
-//         args: PgArguments,
-//     ) -> Pin<Box<dyn Stream<Item = sqlx::Result<PgRow>> + 'e + Send>>
-//     where
-//         'q: 'e,
-//     {
-//         todo!()
-//     }
-
-//     fn fetch_optional<'e, 'q>(
-//         &'e mut self,
-//         command: &'q str,
-//         args: PgArguments,
-//     ) -> BoxFuture<'e, sqlx::Result<Option<PgRow>>>
-//     where
-//         'q: 'e,
-//     {
-//         Box::pin(async move {
-//             match self.run_fake_query_with_args(command, args)? {
-//                 MockPostgresResponse::Single(opt) => Ok(opt),
-//                 other => panic!("Got a bad response in fetch_optional: {:?}", other),
-//             }
-//         })
-//     }
-
-//     fn fetch_one<'e, 'q>(
-//         &'e mut self,
-//         command: &'q str,
-//         args: PgArguments,
-//     ) -> BoxFuture<'e, sqlx::Result<PgRow>>
-//     where
-//         'q: 'e,
-//     {
-//         todo!()
-//     }
-
-//     fn execute<'e, 'q>(
-//         &'e mut self,
-//         command: &'q str,
-//         args: PgArguments,
-//     ) -> BoxFuture<'e, sqlx::Result<u64>>
-//     where
-//         'q: 'e,
-//     {
-//         todo!()
-//     }
-
-//     fn describe<'e, 'q>(
-//         &'e mut self,
-//         command: &'q str,
-//     ) -> BoxFuture<'e, sqlx::Result<sqlx::describe::Describe<Postgres>>>
-//     where
-//         'q: 'e,
-//     {
-//         todo!()
-//     }
-// }
-
-pub(crate) async fn with_test_db<F, Fu, T>(f: F) -> T
+#[inline]
+pub(crate) fn run_with_test_db<F, T>(f: F) -> T
 where
-    for<'db> F: FnOnce(&'db mut sqlx::PgPool) -> (Future<Output = T> + 'db),
+    for<'db> F: FnOnce(&'db mut sqlx::PgPool) -> BoxFuture<'db, T>,
+{
+    async_std::task::block_on(with_test_db(f))
+}
+
+pub(crate) async fn with_test_db<F, T>(f: F) -> T
+where
+    for<'db> F: FnOnce(&'db mut sqlx::PgPool) -> BoxFuture<'db, T>,
 {
     let pool_url_base = format!(
         "postgresql://{}:{}@{}:{}",
@@ -157,13 +43,11 @@ where
         .acquire()
         .await
         .expect("Failed to connect to main DB");
-    sqlx::query("DROP DATABASE $1;")
-        .bind(test_db_name)
+    sqlx::query(&format!("DROP DATABASE IF EXISTS {};", test_db_name))
         .execute(&mut main_db_conn)
         .await
         .expect("Failed to drop test DB (before test)");
-    sqlx::query("CREATE DATABASE $1;")
-        .bind(test_db_name)
+    sqlx::query(&format!("CREATE DATABASE {};", test_db_name))
         .execute(&mut main_db_conn)
         .await
         .expect("Failed to create test DB");
@@ -177,10 +61,5 @@ where
             .expect("Failed to run migrations on test DB");
         f(&mut test_db_pool).await
     };
-    sqlx::query("DROP DATABASE $1;")
-        .bind(test_db_name)
-        .execute(&mut main_db_conn)
-        .await
-        .expect("Failed to drop test DB (after test)");
     result
 }

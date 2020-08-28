@@ -8,15 +8,8 @@ use std::collections::VecDeque;
 
 struct ParStreamItem<T> {
     id: usize,
-    // flag: Arc<AtomicBool>,
     future: JoinHandle<T>,
 }
-
-// enum GetNextResult<T> {
-//     ReadyItem(ParStreamItem<T>),
-//     NothingReady,
-//     Empty,
-// }
 
 pub struct AsyncParallelStream<T, I: Iterator<Item = BoxFuture<'static, T>> + Unpin> {
     parallelism: usize,
@@ -125,17 +118,7 @@ mod tests {
     use std::time::Duration;
 
     use super::AsyncParallelStream;
-
-    fn init() {
-        let mut builder = pretty_env_logger::formatted_builder();
-        builder.is_test(true);
-
-        if let Ok(s) = std::env::var("RUST_LOG") {
-            builder.parse_filters(&s);
-        }
-
-        let _ = builder.try_init();
-    }
+    use crate::test_helpers::init_logging;
 
     type F = BoxFuture<'static, Result<usize, ()>>;
 
@@ -162,7 +145,7 @@ mod tests {
     fn test_ordering() {
         use itertools::Itertools;
 
-        init();
+        init_logging();
 
         let expected = vec![Ok(0), Ok(1), Ok(2), Err(())];
         // Check every permutation to ensure there's no ordering bias

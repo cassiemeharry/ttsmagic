@@ -16,9 +16,7 @@ use url::Url;
 
 use crate::{utils::AsyncPool, web::TideErrorCompat};
 
-// const FILES_FOLDER_RELATIVE: &'static str = "files";
 const FILES_URL_BASE: &'static str = "https://ttsmagic.cards/files/";
-// const STATIC_URL_BASE: &'static str = "https://ttsmagic.cards/static/";
 
 /// There are several subfolders of $root/files:
 ///
@@ -81,18 +79,6 @@ fn make_s3_client() -> s3::S3Client {
 #[derive(RustEmbed)]
 #[folder = "static/"]
 pub struct StaticFiles;
-
-// impl StaticFiles {
-//     pub fn get_url(name: &'static str) -> Result<Url> {
-//         match Self::get(name) {
-//             None => Err(anyhow!("Invalid static file reference: {}", name)),
-//             Some(_) => {
-//                 let base = Url::parse(STATIC_URL_BASE).unwrap();
-//                 Ok(base.join(name)?)
-//             }
-//         }
-//     }
-// }
 
 #[derive(Clone, Debug)]
 pub struct MediaFile {
@@ -184,7 +170,6 @@ pub struct WritableMediaFile {
 
 impl WritableMediaFile {
     async fn new(media_file: MediaFile) -> Result<Self> {
-        // This blocks
         let suffix = media_file
             .key
             .rfind('.')
@@ -402,16 +387,7 @@ pub async fn upload_all(root: PathBuf, delete_after_upload: bool) -> Result<u64>
 
 #[cfg(test)]
 mod tests {
-    fn init() {
-        let mut builder = pretty_env_logger::formatted_builder();
-        builder.is_test(true);
-
-        if let Ok(s) = std::env::var("RUST_LOG") {
-            builder.parse_filters(&s);
-        }
-
-        let _ = builder.try_init();
-    }
+    use crate::test_helpers::init_logging;
 
     #[test]
     fn get_example_file() {
@@ -420,7 +396,7 @@ mod tests {
 
         const PREFIX_MAX_SIZE: usize = 250;
 
-        init();
+        init_logging();
 
         async_std::task::block_on(async {
             let path = "cards/b3/c2/b3c2bd44-4d75-4f61-89c0-1f1ba4d59ffa_png.png";

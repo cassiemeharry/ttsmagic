@@ -73,6 +73,7 @@ pub async fn run_server(
     app.at("/decks/:deck_id").get(deck::download_deck_json);
     app.at("/static/*path").get(app::static_files);
     app.at("/files/*path").get(uploaded_files::get);
+    #[cfg(debug_assertions)]
     app.at("/demo-login/").get(app::demo_login);
     app.at("/steam/login/").get(steam::begin_login);
     app.at("/steam/complete/").get(steam::handle_redirect);

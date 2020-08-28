@@ -316,67 +316,6 @@ impl Deck {
         Ok(rendered)
     }
 
-    //     pub async fn get_for_user(
-    //         db: &mut impl Executor<Database = Postgres>,
-    //         user: UserId,
-    //     ) -> Result<Vec<Self>> {
-    //         let mut rows = sqlx::query_as(
-    //             "\
-    // SELECT deck.id as deck_id
-    //      , deck.user_id as user_id
-    //      , deck.title as deck_title
-    //      , deck.url as deck_url
-    //      , deck.json::text as deck_json
-    //      , deck_entry.card as card_id
-    //      , scryfall_card.json as card_json
-    //      , scryfall_card.updated_at as card_updated_at
-    //      , deck_entry.copies as copies
-    //      , deck_entry.is_sideboard as is_sideboard
-    // FROM deck_entry
-    // INNER JOIN deck
-    //   ON (deck.id = deck_entry.deck_id)
-    // INNER JOIN scryfall_card
-    //   ON (((scryfall_card.json ->> 'id')::uuid) = deck_entry.card)
-    // WHERE
-    //   deck.user_id = $1
-    // ;",
-    //         )
-    //         .bind(user.as_queryable())
-    //         .fetch(db);
-
-    //         let mut decks_by_id: HashMap<DeckId, Deck> = HashMap::new();
-
-    //         while let Some(row) = rows.next().await {
-    //             let row: DeckEntryRow = row?;
-    //             let deck: &mut Deck = decks_by_id.entry(row.deck_id).or_insert(Deck {
-    //                 id: row.deck_id,
-    //                 user_id: user,
-    //                 title: row.deck_title,
-    //                 url: row.deck_url,
-    //                 main_deck: HashMap::new(),
-    //                 sideboard: HashMap::new(),
-    //                 rendered_json: row.deck_json,
-    //             });
-    //             // let card_id = row.card_id;
-    //             let card = row.card_row.try_into()// .with_context(|| {
-    //             //     format!(
-    //             //         "Getting deck entries for user {} (card ID: {}, deck ID: {})",
-    //             //         user, card_id, deck.id,
-    //             //     )
-    //             // })
-    //                 ?;
-    //             if row.is_sideboard {
-    //                 deck.sideboard.insert(row.card_id, (card, row.copies));
-    //             } else {
-    //                 deck.main_deck.insert(row.card_id, (card, row.copies));
-    //             }
-    //         }
-
-    //         let mut decks: Vec<Deck> = decks_by_id.into_iter().map(|(_k, v)| v).collect();
-    //         decks.sort_by_key(|d| (d.title.clone(), d.url.clone()));
-    //         Ok(decks)
-    //     }
-
     pub async fn get_by_id(
         db: &mut impl Executor<Database = Postgres>,
         id: DeckId,
@@ -488,25 +427,16 @@ WHERE user_id = $1;",
         let url: String = row.get("url");
         let color_identity = {
             let raw_identity = row.get::<PgArray1D<String>, _>("color_identity");
-            warn!("TODO: extract color identity from {:?}", raw_identity);
             let mut ci = DeckColorIdentity::default();
-            for color_str in raw_identity.get() {
-                if color_str.len() != 1 {
-                    warn!(
-                        "Got an unexpected color value when parsing deck {:?}'s color identity: {:?}",
-                        deck_id, color_str
-                    );
-                    continue;
-                }
-                let color: char = color_str.chars().next().unwrap();
-                match color {
-                    'B' => ci.black = true,
-                    'U' => ci.blue = true,
-                    'G' => ci.green = true,
-                    'R' => ci.red = true,
-                    'W' => ci.white = true,
+            for color in raw_identity.get() {
+                match color.as_str() {
+                    "B" => ci.black = true,
+                    "U" => ci.blue = true,
+                    "G" => ci.green = true,
+                    "R" => ci.red = true,
+                    "W" => ci.white = true,
                     other => warn!(
-                        "Got an unexpected character when parsing a deck's color identity: {:?}",
+                        "Got an unexpected color value when parsing a deck's color identity: {:?}",
                         other
                     ),
                 }

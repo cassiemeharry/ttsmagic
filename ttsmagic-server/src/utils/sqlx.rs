@@ -122,21 +122,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn init() {
-        let mut builder = pretty_env_logger::formatted_builder();
-        builder.is_test(true);
-
-        if let Ok(s) = std::env::var("RUST_LOG") {
-            builder.parse_filters(&s);
-        }
-
-        let _ = builder.try_init();
-    }
+    use crate::test_helpers::init_logging;
 
     #[test]
     fn test_pgarray1d_string() {
-        init();
+        init_logging();
 
         let raw_bytes = &[
             0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 25, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 1, 85, 0, 0, 0,
@@ -150,7 +140,7 @@ mod tests {
 
     #[test]
     fn test_pgarray1d_i32() {
-        init();
+        init_logging();
 
         let raw_bytes = &[
             0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 23, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0, 1, 0,
@@ -166,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_pgarray1d_i32_nulls() {
-        init();
+        init_logging();
 
         let raw_bytes = &[
             0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 23, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0, 1,

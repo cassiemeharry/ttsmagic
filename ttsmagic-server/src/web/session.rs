@@ -24,17 +24,7 @@ pub const SESSION_EXPIRE_SECONDS: usize = 3 * 24 * 60 * 60;
 pub const SESSION_COOKIE_NAME: &'static str = "ttsmagic-session";
 
 impl Session {
-    pub fn new(user: User) -> Self {
-        Session {
-            session_id: Uuid::new_v4(),
-            user: Some(user),
-        }
-    }
-
-    pub async fn new_from_user_id(
-        db: &mut impl Executor<Database = Postgres>,
-        user_id: UserId,
-    ) -> Result<Self> {
+    pub async fn new(db: &mut impl Executor<Database = Postgres>, user_id: UserId) -> Result<Self> {
         let new_session_id = Uuid::new_v4();
         Self::from_user_id(db, new_session_id, user_id).await
     }
@@ -275,9 +265,6 @@ pub async fn from_cookie_header(
     }
     Ok(None)
 }
-
-// async fn from_cookies(raw_cookies: &[&str], redis: &redis::Client) -> Result<Option<Session>> {
-// }
 
 #[derive(Clone, Debug)]
 struct SessionState {

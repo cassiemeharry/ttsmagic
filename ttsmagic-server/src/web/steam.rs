@@ -173,9 +173,7 @@ pub async fn handle_redirect(request: Request<AppState>) -> tide::Result {
         .await
         .context("Creating Steam login after successful verification")
         .tide_compat()?;
-    let new_session = Session::new_from_user_id(&mut db, user.id)
-        .await
-        .tide_compat()?;
+    let new_session = Session::new(&mut db, user.id).await.tide_compat()?;
     let mut response =
         Response::new(StatusCode::TemporaryRedirect).set_header(LOCATION.clone(), "/");
     response

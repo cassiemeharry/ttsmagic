@@ -1,14 +1,8 @@
 use async_std::{io::Cursor, path::Path};
-use tide::{http::headers::HeaderName, Request, Response, Result, StatusCode};
+use tide::{Request, Response, Result, StatusCode};
 
 use super::AppState;
-use crate::{
-    files::StaticFiles,
-    web::{
-        session::{SessionGetExt, SessionSetExt},
-        AnyhowTideCompat,
-    },
-};
+use crate::{files::StaticFiles, web::session::SessionGetExt};
 
 pub async fn home_page(req: Request<AppState>) -> Result {
     let get_session_future = req.get_session();
@@ -53,13 +47,20 @@ pub async fn static_files(req: Request<AppState>) -> Result {
     Ok(resp)
 }
 
+#[allow(unused)]
+#[cfg(debug_assertions)]
 pub async fn demo_login(req: Request<AppState>) -> Result {
+    use crate::web::{session::SessionSetExt, AnyhowTideCompat};
+    use tide::http::headers::HeaderName;
+
     let state = req.state().clone();
     let mut db = &state.db_pool;
     let demo_user = crate::user::User::get_or_create_demo_user(&mut db)
         .await
         .tide_compat()?;
-    let session = crate::web::session::Session::new(demo_user);
+    let session = crate::web::session::Session::new(&mut db, demo_user.id)
+        .await
+        .tide_compat()?;
     let mut resp = Response::new(StatusCode::Found)
         .set_header(HeaderName::from_ascii(b"Location".to_vec()).unwrap(), "/");
     let mut redis_conn = state.redis.get_async_connection().await?;

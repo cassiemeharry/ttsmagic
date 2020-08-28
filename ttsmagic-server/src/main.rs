@@ -18,13 +18,14 @@ mod migrations;
 mod notify;
 mod scryfall;
 mod secrets;
+mod test_helpers;
 mod tts;
 mod user;
 mod utils;
 mod web;
 
 fn setup_logging() -> Result<()> {
-    let mut builder = pretty_env_logger::formatted_builder();
+    let mut builder = pretty_env_logger::formatted_timed_builder();
     if let Ok(s) = std::env::var("RUST_LOG") {
         builder.parse_filters(&s);
     }
@@ -116,10 +117,8 @@ async fn main() -> Result<()> {
             // TODO: get the user from args
             let user = user::User::get_or_create_demo_user(&mut db_pool).await?;
             let url_str = load_deck_opts.value_of("url").unwrap();
-            // let mut tx = db_pool.begin().await?;
             let url = url::Url::parse(&url_str)?;
             let deck = deck::load_deck(&mut db_pool, &mut redis_conn, &user, url).await?;
-            // tx.commit().await?;
             println!("Loaded deck: {:#?}", deck);
         }
         ("render-deck", Some(render_deck_opts)) => {

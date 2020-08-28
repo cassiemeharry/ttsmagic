@@ -173,40 +173,6 @@ impl Pile {
             })
         }
     }
-
-    // async fn expand_full_face_lands(
-    //     self,
-    //     db: &mut impl Executor<Database = Postgres>,
-    // ) -> Result<Self> {
-    //     let mut new_cards = Vec::with_capacity(self.cards.len() * 2);
-
-    //     for (card, count) in self.cards {
-    //         if let Some(bl_type) = card.basic_land_type() {
-    //             debug!("Found a basic land: {}x {}", count, card.combined_name());
-    //             let full_faced_cards = scryfall::full_faced_lands(db, bl_type).await?;
-    //             if full_faced_cards.is_empty() {
-    //                 warn!(
-    //                     "Didn't find any full faced lands for basic land type {:?}",
-    //                     bl_type
-    //                 );
-    //             } else {
-    //                 debug!(
-    //                     "Found {} full faced {:?} cards",
-    //                     full_faced_cards.len(),
-    //                     bl_type
-    //                 );
-    //                 continue;
-    //             }
-    //         }
-
-    //         new_cards.push((card, count));
-    //     }
-
-    //     Ok(Self {
-    //         cards: new_cards,
-    //         face_up: self.face_up,
-    //     })
-    // }
 }
 
 #[derive(Clone, Debug)]
@@ -240,26 +206,10 @@ impl TryFrom<(Pile, &'_ [RenderedPage])> for LinearPile {
                 cards.push((card.clone(), deck_id));
             }
         }
-        // if cards.len() >= 100 {
-        //     let preview = {
-        //         let mut buf = String::with_capacity(100);
-        //         buf.push('[');
-        //         for (card, deck_id) in cards.iter().take(5) {
-        //             buf.push_str(&format!("{} ({}), ", card.combined_name(), deck_id));
-        //         }
-        //         buf.push_str("...]");
-        //         buf
-        //     };
-        //     Err(anyhow!(
-        //         "Pile starting with cards {} has more than 100 cards in it!",
-        //         preview
-        //     ))
-        // } else {
         Ok(LinearPile {
             cards,
             face_up: pile.face_up,
         })
-        // }
     }
 }
 
@@ -452,25 +402,6 @@ async fn new_blank_page(cards_wide: u32, cards_high: u32) -> Result<RgbImage> {
     Ok(page)
 }
 
-// macro_rules! time_block {
-//     ($label:expr, $block:block) => {{
-//         let start = Utc::now();
-//         let value = $block;
-//         let end = Utc::now();
-//         let delta = end - start;
-//         trace!("{} took {}", $label, delta);
-//         value
-//     }};
-// }
-
-// async fn load_card(
-//     api: Arc<ScryfallApi>,
-//     root: PathBuf,
-//     seen_cards: Arc<Mutex<HashSet<ScryfallId>>>,
-// ) -> impl Fn(usize, usize, &ScryfallCard) -> Result<Option<RgbImage>> {
-//     move |i, j, card| {}
-// }
-
 async fn make_pages<R: AsyncCommands>(
     api: Arc<ScryfallApi>,
     redis: &mut R,
@@ -493,7 +424,6 @@ async fn make_pages<R: AsyncCommands>(
             let api = Arc::clone(&api);
             let wrapper_card = card.clone();
             let card_name = card.combined_name();
-            // let card_name_2 = card_name.clone();
             let future = async move {
                 let card_id: ScryfallId = task_card.id()?;
                 debug!("Loading card {}...", card_name);
@@ -647,7 +577,6 @@ fn render_piles_to_json<'a>(
     piles: Piles,
     pages: &'a [RenderedPage],
 ) -> Result<Value> {
-    // let mut pages = Vec::with_capacity(saved_pages.len());
     let base_transform = json!({
         "posX": 0.0,
         "posY": 0.0,

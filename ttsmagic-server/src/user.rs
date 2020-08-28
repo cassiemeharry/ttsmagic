@@ -147,14 +147,3 @@ impl sqlx::FromRow<PgRow> for User {
         }
     }
 }
-
-// #[test]
-// fn test_steam_login() {
-//     const ID: u64 = 76561198026844002;
-
-//     use async_std::task::block_on;
-//     block_on(async {
-//         let name = User::get_user_name_from_steam(ID).await.unwrap();
-//         assert_eq!(&name, "bluejeans");
-//     });
-// }

@@ -98,8 +98,6 @@ impl sqlx::FromRow<PgRow> for ScryfallCardRow {
     fn from_row(row: PgRow) -> Self {
         let updated_at: DateTime<Utc> = row.get("updated_at");
         let json: String = row.get("json");
-        // let json: Value =
-        //     serde_json::from_str(&json_text).context("Failed to parse JSON from database")?;
         ScryfallCardRow { json, updated_at }
     }
 }
