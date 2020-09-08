@@ -57,6 +57,15 @@ impl<T> PgArray1D<T> {
         }
 
         let ndim = read_u32!();
+        if ndim == 0 {
+            if raw.len() != 8 {
+                return Err(DecodeError::Message(Box::new(format!(
+                    "Found what looks like an empty array (with dimension 0), but there were an unexpected number of bytes remaining to parse (got {}, expected 8)",
+                    raw.len(),
+                ))));
+            }
+            return Ok(Self { inner: vec![] });
+        }
         if ndim != 1 {
             return Err(DecodeError::Message(Box::new(format!(
                 "Attempted to decode a {} dimensional array as a 1D array",
@@ -155,6 +164,15 @@ mod tests {
         assert_eq!(decoded.len(), 2);
         assert_eq!(decoded[0].as_str(), "U");
         assert_eq!(decoded[1].as_str(), "W");
+    }
+
+    #[test]
+    fn test_pgarray1d_string_empty() {
+        init_logging();
+
+        let raw_bytes = &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 25];
+        let decoded: Vec<String> = PgArray1D::<String>::decode(raw_bytes).unwrap().get();
+        assert_eq!(decoded.len(), 0);
     }
 
     #[test]
