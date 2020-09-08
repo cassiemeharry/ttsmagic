@@ -312,6 +312,21 @@ impl SessionMiddleware {
                 session.save_to_cache(&mut redis_conn).await.tide_compat()?;
             }
         }
+        // Record user info in Sentry when errors occur
+        let mut _prev_scope = None;
+        if let Some(user) = session.user.as_ref() {
+            let hub = sentry::Hub::current();
+            _prev_scope = Some(hub.push_scope());
+            hub.configure_scope(|scope| {
+                let sentry_user = sentry::protocol::User {
+                    id: Some(user.id.to_string()),
+                    username: Some(user.display_name.clone()),
+                    ..Default::default()
+                };
+                scope.set_user(Some(sentry_user));
+            });
+        }
+
         let req_with_session = req.set_local(SessionState { session });
         let resp = next.run(req_with_session).await?;
         Ok(resp)
