@@ -147,3 +147,13 @@ impl sqlx::FromRow<PgRow> for User {
         }
     }
 }
+
+impl<'a> Into<sentry::protocol::User> for &'a User {
+    fn into(self) -> sentry::protocol::User {
+        sentry::protocol::User {
+            id: Some(self.id.to_string()),
+            username: Some(self.display_name.clone()),
+            ..Default::default()
+        }
+    }
+}

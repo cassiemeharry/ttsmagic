@@ -318,11 +318,7 @@ impl SessionMiddleware {
             let hub = sentry::Hub::current();
             _prev_scope = Some(hub.push_scope());
             hub.configure_scope(|scope| {
-                let sentry_user = sentry::protocol::User {
-                    id: Some(user.id.to_string()),
-                    username: Some(user.display_name.clone()),
-                    ..Default::default()
-                };
+                let sentry_user = user.into();
                 scope.set_user(Some(sentry_user));
             });
         }

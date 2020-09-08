@@ -58,6 +58,16 @@ async fn handle_connection(
 ) -> Result<()> {
     debug!("Got a websocket connection for {}", user);
 
+    let _prev_scope = {
+        let hub = sentry::Hub::current();
+        let prev_scope = Some(hub.push_scope());
+        hub.configure_scope(|scope| {
+            let sentry_user = (&user).into();
+            scope.set_user(Some(sentry_user));
+        });
+        prev_scope
+    };
+
     let mut pubsub_conn = state
         .redis
         .get_async_connection()
