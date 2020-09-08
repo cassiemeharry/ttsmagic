@@ -39,6 +39,7 @@ fn setup_sentry(logger: env_logger::Logger, dsn: Option<&str>) -> Option<sentry:
     let opts: sentry::ClientOptions = match dsn {
         None => {
             log::set_boxed_logger(Box::new(logger)).unwrap();
+            log::set_max_level(log::LevelFilter::Trace);
             return None;
         }
         Some(dsn) => dsn.into(),
