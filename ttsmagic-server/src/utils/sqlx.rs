@@ -30,23 +30,12 @@ impl<T> PgArray1D<T> {
         trace!("Decode successful (got {:?})", val);
         Ok(val)
     }
-}
 
-impl<T> HasSqlType<PgArray1D<T>> for Postgres
-where
-    Postgres: HasSqlType<T>,
-{
-    fn type_info() -> PgTypeInfo {
-        todo!()
-    }
-}
-
-impl<T> Decode<Postgres> for PgArray1D<T>
-where
-    T: Decode<Postgres> + Encode<Postgres> + Any + std::fmt::Debug,
-    Postgres: HasSqlType<T>,
-{
-    fn decode(mut raw: &[u8]) -> Result<Self, DecodeError> {
+    fn decode_bytes(mut raw: &[u8]) -> Result<Self, DecodeError>
+    where
+        T: Decode<Postgres> + Any + std::fmt::Debug,
+        Postgres: HasSqlType<T>,
+    {
         trace!(
             "Beginning decode of PgArray1D<{:?}>, raw = {:?}",
             type_name::<T>(),
@@ -116,6 +105,36 @@ where
             ))));
         }
         Ok(PgArray1D { inner: elems })
+    }
+}
+
+impl<T> HasSqlType<PgArray1D<T>> for Postgres
+where
+    Postgres: HasSqlType<T>,
+{
+    fn type_info() -> PgTypeInfo {
+        todo!()
+    }
+}
+
+impl<T> Decode<Postgres> for PgArray1D<T>
+where
+    T: Decode<Postgres> + Encode<Postgres> + Any + std::fmt::Debug,
+    Postgres: HasSqlType<T>,
+{
+    fn decode(raw: &[u8]) -> Result<Self, DecodeError> {
+        match Self::decode_bytes(raw) {
+            Ok(array) => Ok(array),
+            Err(e) => {
+                error!(
+                    "Failed to decode {}, faking an empty result: {}\nInput bytes were {:?}",
+                    type_name::<PgArray1D<T>>(),
+                    e,
+                    raw,
+                );
+                Ok(PgArray1D { inner: vec![] })
+            }
+        }
     }
 }
 
