@@ -24,14 +24,29 @@ mod user;
 mod utils;
 mod web;
 
-fn setup_logging() -> Result<()> {
+fn setup_logging() -> env_logger::Logger {
     let mut builder = pretty_env_logger::formatted_timed_builder();
     if let Ok(s) = std::env::var("RUST_LOG") {
         builder.parse_filters(&s);
     }
 
-    builder.init();
-    Ok(())
+    let logger = builder.build();
+
+    logger
+}
+
+fn setup_sentry(logger: env_logger::Logger, dsn: Option<&str>) -> Option<sentry::ClientInitGuard> {
+    let opts: sentry::ClientOptions = match dsn {
+        None => {
+            log::set_boxed_logger(Box::new(logger)).unwrap();
+            return None;
+        }
+        Some(dsn) => dsn.into(),
+    };
+    let log_integration =
+        sentry::integrations::log::LogIntegration::default().with_env_logger_dest(Some(logger));
+    let opts = opts.add_integration(log_integration);
+    Some(sentry::init(opts))
 }
 
 #[async_std::main]
@@ -40,12 +55,12 @@ async fn main() -> Result<()> {
         eprintln!("Failed to get .env file: {}", e);
     };
 
-    setup_logging()?;
+    let logger = setup_logging();
 
     let current_dir = std::env::current_dir()?;
     let args = get_args(&current_dir);
 
-    let mut _sentry_guard = args.value_of("sentry_dsn").map(|dsn| sentry::init(dsn));
+    let mut _sentry_guard = setup_sentry(logger, args.value_of("sentry_dsn"));
 
     let scryfall_api = std::sync::Arc::new(scryfall::api::ScryfallApi::new());
     let mut db_pool = sqlx::PgPool::new(&format!(
