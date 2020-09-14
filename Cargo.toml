@@ -10,3 +10,7 @@ members = [
 exclude = [
   "ttsmagic-frontend/wasm",
 ]
+
+[profile.release]
+debug = true
+lto = "thin"
