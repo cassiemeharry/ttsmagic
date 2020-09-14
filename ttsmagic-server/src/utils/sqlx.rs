@@ -4,12 +4,38 @@ use sqlx::{
     postgres::{PgTypeInfo, Postgres},
     types::{HasSqlType, TypeInfo},
 };
-use std::any::{type_name, Any};
+use std::{
+    any::{type_name, Any},
+    ops,
+};
 
 #[repr(transparent)]
 #[derive(Clone, Debug)]
 pub struct PgArray1D<T> {
     inner: Vec<T>,
+}
+
+impl<T> ops::Deref for PgArray1D<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        self.inner.as_slice()
+    }
+}
+
+impl<T> ops::DerefMut for PgArray1D<T> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        self.inner.as_mut_slice()
+    }
+}
+
+impl<T> IntoIterator for PgArray1D<T> {
+    type Item = T;
+    type IntoIter = <Vec<T> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter()
+    }
 }
 
 impl<T> PgArray1D<T> {
