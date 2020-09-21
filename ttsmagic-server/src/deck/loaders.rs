@@ -262,15 +262,24 @@ impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for 
         info!("Parsing TappedOut.org deck at {}", url);
 
         let title = {
-            let request = client.get(&url);
-            let mut response = request.await.map_err(Error::msg)?;
-            let html_string = response.body_string().await.map_err(Error::msg)?;
+            let request = client
+                .get(&url)
+                .middleware(crate::utils::SurfRedirectMiddleware::new());
+            let mut response = request
+                .await
+                .map_err(Error::msg)
+                .context("Failed to load deck page from TappedOut")?;
+            let html_string = &response
+                .body_string()
+                .await
+                .map_err(Error::msg)
+                .context("Failed to load contents of deck page from TappedOut")?;
             let html = Html::parse_document(&html_string);
             let title_selector = Selector::parse(".well.well-jumbotron h2").unwrap();
             let mut matches = html.select(&title_selector);
             let matched = matches
                 .next()
-                .ok_or_else(|| anyhow!("No match for {:?}", title_selector))?;
+                .ok_or(anyhow!("Failed to find title for TappedOut deck"))?;
             get_text(matched)
         };
 
@@ -278,7 +287,9 @@ impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for 
         let mut main_deck = HashMap::with_capacity(110);
         let mut sideboard = HashMap::new();
 
-        let request = client.get(&csv_url);
+        let request = client
+            .get(&csv_url)
+            .middleware(crate::utils::SurfRedirectMiddleware::new());
         let mut response = request.await.map_err(Error::msg)?;
         let csv_bytes = response.body_bytes().await.map_err(Error::msg)?;
         let csv_cursor = std::io::Cursor::new(csv_bytes);

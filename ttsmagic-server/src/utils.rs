@@ -9,8 +9,10 @@ use futures::{future::BoxFuture, Sink};
 
 mod async_par_stream;
 pub mod sqlx;
+mod surf_redirect_middleware;
 
 pub use async_par_stream::AsyncParallelStream;
+pub use surf_redirect_middleware::RedirectMiddleware as SurfRedirectMiddleware;
 
 pub struct AsyncStdStreamWrapper<S> {
     stream: S,
