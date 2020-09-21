@@ -276,7 +276,7 @@ impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for 
 
         let mut commanders = HashMap::new();
         let mut main_deck = HashMap::with_capacity(110);
-        let sideboard = HashMap::new();
+        let mut sideboard = HashMap::new();
 
         let request = client.get(&csv_url);
         let mut response = request.await.map_err(Error::msg)?;
@@ -317,11 +317,14 @@ impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for 
                     );
                     continue;
                 }
-                other => Err(anyhow!(
-                    "Unexpected TappedOut \"board\" value for card {}: {:?}",
-                    row.name,
-                    other
-                ))?,
+                "side" => &mut sideboard,
+                other => {
+                    warn!(
+                        "Unexpected TappedOut \"board\" value for card {}: {:?}",
+                        row.name, other
+                    );
+                    continue;
+                }
             };
             let entry = pile
                 .entry(oracle_id)
