@@ -55,7 +55,7 @@ impl Component for DeckRenderer {
 
     fn view(&self) -> Html {
         html! {
-            <form id="create-deck-form">
+            <div id="create-deck-form">
                 <label for="create-url"> { "URL:" } </label>
                 <input id="create-url"
                     autofocus=true
@@ -70,7 +70,7 @@ impl Component for DeckRenderer {
                 >
                     { "Convert!" }
                 </button>
-            </form>
+            </div>
         }
     }
 }

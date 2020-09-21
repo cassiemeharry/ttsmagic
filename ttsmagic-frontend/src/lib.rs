@@ -22,6 +22,7 @@ pub struct Model {
 }
 
 pub enum Msg {
+    IgnoreError(usize),
     WS(ws::Message),
 }
 
@@ -57,15 +58,36 @@ impl Component for Model {
         let ws_url = make_ws_url().unwrap();
         let socket = ws::WebSocket::new(ws_url).unwrap();
         socket.register_message_callback(link.callback(Msg::WS));
+        let fatal_errors = vec![];
+        // // Sample errors
+        //     s2f::Error {
+        //         user_message: "This is the user message".to_owned(),
+        //         details: Some("This is the detailed message.".to_owned()),
+        //     },
+        //     s2f::Error {
+        //         user_message:
+        //             "This is a rather long sample message without any details attached to it"
+        //                 .to_owned(),
+        //         details: None,
+        //     },
+        // ];
         Model {
             link,
             socket: Rc::new(socket),
-            fatal_errors: vec![],
+            fatal_errors,
         }
     }
 
     fn update(&mut self, msg: Self::Message) -> ShouldRender {
         match msg {
+            Msg::IgnoreError(i) => {
+                if i < self.fatal_errors.len() {
+                    self.fatal_errors.remove(i);
+                    true
+                } else {
+                    false
+                }
+            }
             Msg::WS(ws_msg) => match &*ws_msg {
                 s2f::ServerToFrontendMessage::FatalError(e) => {
                     let details = match &e.details {
@@ -82,12 +104,22 @@ impl Component for Model {
     }
 
     fn view(&self) -> Html {
+        let fatal_errors = if self.fatal_errors.is_empty() {
+            html! { <></> }
+        } else {
+            html! {
+                <div id="fatal-errors">
+                    <h3> { "An error occurred!" } </h3>
+                    <p> { "You may wish to reload the page and try again." } </p>
+                    <hr />
+                    { for self.fatal_errors.iter().enumerate().map(|(i, e)| Self::view_fatal_error(&self, i, e)) }
+                </div>
+            }
+        };
         html! {
             <div id="content">
                 <h1> {"MtG → Tabletop Simulator Deck Builder"} </h1>
-                <ul id="fatal-errors">
-                    { for self.fatal_errors.iter().map(|e| Self::view_fatal_error(&self, e)) }
-                </ul>
+                { fatal_errors }
                 <deck_renderer::DeckRenderer socket=self.socket.clone() />
                 <deck_list::DeckList socket=self.socket.clone() />
                 <footer>
@@ -99,9 +131,29 @@ impl Component for Model {
 }
 
 impl Model {
-    fn view_fatal_error(&self, e: &s2f::Error) -> Html {
-        html! {
-            <p> { &e.user_message } </p>
+    fn view_fatal_error(&self, i: usize, e: &s2f::Error) -> Html {
+        let summary = html! {
+            <div class="summary-wrapper">
+            <p class="summary">
+                <span> { "Error: "} { &e.user_message } </span>
+                <button onclick=self.link.callback(move |_| Msg::IgnoreError(i))>
+                    { "✕" }
+                </button>
+            </p>
+            </div>
+        };
+        match e.details.as_ref() {
+            Some(details) if details != &e.user_message => {
+                html! {
+                    <details class="fatal-error">
+                        <summary> { summary } </summary>
+                        <pre><code>{ details.as_str() }</code></pre>
+                    </details>
+                }
+            }
+            _ => html! {
+                <p class="fatal-error"> { summary } </p>
+            },
         }
     }
 }
