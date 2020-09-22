@@ -72,7 +72,7 @@ async fn handle_connection(
         .redis
         .get_async_connection()
         .await
-        .context("Getting Redis connection for websocket")?
+        .context("Failed to get Redis connection for websocket")?
         .into_pubsub();
     let pubsub_stream = notify::subscribe_user(&mut pubsub_conn, user.id).await?;
     let mut pubsub_stream = AsyncStdStreamWrapper::new(pubsub_stream);
@@ -149,7 +149,7 @@ async fn handle_connection(
                     .redis
                     .get_async_connection()
                     .await
-                    .context("While getting Redis to render deck at request of websocket")?;
+                    .context("Failed to connect to Redis to render deck")?;
                 let handle_sink_1 = handle_sink.clone();
                 let mut handle_sink_2 = handle_sink.clone();
                 spawn(async move {
@@ -210,9 +210,7 @@ async fn handle_incoming_message(
             spawn_blocking::<_, Result<()>>(move || {
                 block_on(async move {
                     let mut deck =
-                        crate::deck::load_deck(&mut db_conn, &mut redis_conn, &user, url)
-                            .await
-                            .context("Loading deck at request of websocket")?;
+                        crate::deck::load_deck(&mut db_conn, &mut redis_conn, &user, url).await?;
                     deck.render(api, &mut db_conn, &mut redis_conn).await?;
                     Ok(())
                 })
@@ -273,11 +271,11 @@ impl<'a> tungstenite::handshake::server::Callback for &'a mut ServerCallback {
 pub async fn listen((host, port): (IpAddr, u16), state: AppState) -> Result<()> {
     let socket = TcpListener::bind((host, port))
         .await
-        .context("While binding to websocket port")?;
+        .context("Failed to bind to websocket port")?;
     let mut incoming = socket.incoming();
 
     while let Some(stream) = incoming.next().await {
-        let stream = stream.context("While accepting an incoming connection")?;
+        let stream = stream.context("Failed to accept an incoming connection")?;
 
         let stream_state = state.clone();
         spawn(async move {

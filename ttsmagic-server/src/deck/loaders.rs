@@ -32,7 +32,7 @@ async fn extract_commanders(
             .await
             .with_context(|| {
                 format!(
-                    "Checking whether {} (oracle ID: {}) is legal in commander",
+                    "Failed to check whether {} (oracle ID: {}) is legal in commander",
                     name, oracle_id
                 )
             })?;
@@ -47,7 +47,7 @@ async fn extract_commanders(
     let oracle_ids = main_deck.keys().copied().collect::<Vec<ScryfallOracleId>>();
     let deck_color_identity_owned = scryfall::deck_color_identity(db, oracle_ids.as_slice())
         .await
-        .context("Getting deck color identity")?
+        .context("Failed to get deck color identity")?
         .into_iter()
         .collect::<Vec<String>>();
     let deck_color_identity_borrowed = deck_color_identity_owned
@@ -70,7 +70,7 @@ async fn extract_commanders(
             .await
             .with_context(|| {
                 format!(
-                    "Checking whether {} (oracle ID: {}) can be a commander",
+                    "Failed to check whether {} (oracle ID: {}) can be a commander",
                     name, oracle_id
                 )
             })?
@@ -115,6 +115,10 @@ impl DeckMatcher for DeckboxLoader {
 
 #[async_trait(?Send)]
 impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for DeckboxLoader {
+    fn name(&self) -> &'static str {
+        "Deckbox"
+    }
+
     fn canonical_deck_url(&self) -> Url {
         let id_str = format!("{}", self.id);
         let mut url = Url::parse(&format!("https://deckbox.org/")).unwrap();
@@ -203,7 +207,7 @@ impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for 
         parse_section!(self, sideboard_card_rows_selector, sideboard);
         let commanders = extract_commanders(db, &mut main_deck)
             .await
-            .context("Extracting commanders from main deck list")?;
+            .context("Failed to extract commanders from main deck list")?;
 
         let deck = unparsed
             .save_cards(db, redis, title, commanders, main_deck, sideboard)
@@ -235,6 +239,10 @@ impl DeckMatcher for TappedOutLoader {
 
 #[async_trait(?Send)]
 impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for TappedOutLoader {
+    fn name(&self) -> &'static str {
+        "TappedOut"
+    }
+
     fn canonical_deck_url(&self) -> Url {
         let mut url = Url::parse(&format!("https://tappedout.net/")).unwrap();
         url.path_segments_mut()
@@ -296,8 +304,8 @@ impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for 
         let mut csv_reader = csv::Reader::from_reader(csv_cursor);
 
         for row_result in csv_reader.deserialize::<TappedOutCSVRow>() {
-            let mut row =
-                row_result.with_context(|| format!("Parsing TappedOut deck CSV from {}", url))?;
+            let mut row = row_result
+                .with_context(|| format!("Failed to parse TappedOut deck CSV from {}", url))?;
 
             // TappedOut sometimes renders split card names with a single slash,
             // while we canonicalize them with two slashes.
@@ -307,7 +315,7 @@ impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for 
 
             let oracle_id = scryfall::oracle_id_by_name(db, &row.name)
                 .await
-                .with_context(|| format!("Loading TappedOut deck {}", self.slug))?;
+                .with_context(|| format!("Failed to load TappedOut deck {}", self.slug))?;
             if row.commander_col == "True" {
                 commanders.insert(oracle_id, row.name.to_string());
                 continue;

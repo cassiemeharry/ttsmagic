@@ -38,6 +38,92 @@ pub struct RenderedPage {
     card_mapping: HashMap<ScryfallId, u8>,
 }
 
+fn get_parts(card: ScryfallCard) -> Box<dyn Iterator<Item = ScryfallId> + Send> {
+    let all_parts: Vec<Value> = match card.raw_json().get("all_parts").map(Value::as_array) {
+        None => return Box::new(std::iter::empty()),
+        Some(None) => return Box::new(std::iter::empty()),
+        Some(Some(all_parts)) => all_parts.clone(),
+    };
+    let card_name = card.combined_name();
+    let iter = all_parts.into_iter().enumerate().filter_map(move |(i, part_json)| {
+        let raw_part_id_value = match part_json.get("id") {
+            Some(raw_id) => raw_id,
+            None => {
+                warn!(
+                    "Related card object {} (for card {}) is missing its \"id\" field.",
+                    i, card_name,
+                );
+                return None;
+            }
+        };
+        let raw_part_id = match raw_part_id_value.as_str() {
+            Some(s) => s,
+            None => {
+                warn!(
+                    "Related card object {} (for card {}) \"id\" field is not a string.",
+                    i,
+                    card_name
+                );
+                return None;
+            }
+        };
+        let part_id = match ScryfallId::from_str(raw_part_id) {
+            Ok(id) => id,
+            Err(_) => {
+                warn!("Related card object {} (for card {})'s \"id\" field is not a valid card ID.", i, card_name);
+                return None;
+            }
+        };
+        let component_type = match part_json.get("component") {
+                None => {
+                    warn!(
+                        "Missing \"component\" field on related part for card {}",
+                        card_name
+                    );
+                    return None;
+                }
+                Some(c_value) => match c_value.as_str() {
+                    Some(c_value_str) => c_value_str,
+                    None => {
+                        warn!(
+                            "Related card {} (for card {}) \"component\" field is not a string.",
+                            part_id,
+                            card_name
+                        );
+                        return None;
+                    }
+                }
+        };
+        match component_type {
+            "combo_piece" => {
+                debug!(
+                    "Found combo piece {} related to card {}",
+                    part_id, card_name
+                );
+                return None;
+            }
+            "meld_part" => {
+                debug!("Found meld part {} related to card {}", part_id, card_name);
+                return None;
+            }
+            "meld_result" => debug!(
+                "Found meld result {} related to card {}",
+                part_id, card_name
+            ),
+            "token" => debug!("Found token {} related to card {}", part_id, card_name),
+            other => {
+                warn!(
+                    "Found unexpected related card component type {:?} for {} related to card {}",
+                    other, part_id, card_name
+                );
+                return None;
+            }
+        };
+        Some(part_id)
+    });
+    Box::new(iter)
+}
+
 async fn get_tokens(
     db: &mut impl Executor<Database = Postgres>,
     cards: impl Iterator<Item = ScryfallCard>,
@@ -56,85 +142,15 @@ async fn get_tokens(
             // We've seen this card before, don't reprocess it.
             continue;
         }
-        let all_parts: &Vec<Value> = match card.raw_json().get("all_parts").map(Value::as_array) {
-            None => continue,
-            Some(None) => continue,
-            Some(Some(all_parts)) => all_parts,
-        };
-        let card_name = card.combined_name().to_string();
-        for (i, part_json) in all_parts.iter().enumerate() {
-            let raw_part_id = part_json
-                .get("id")
-                .ok_or_else(|| {
-                    anyhow!(
-                        "Related card object {} (for card {}) is missing its \"id\" field.",
-                        i,
-                        card_name,
-                    )
-                })
-                .with_context(|| format!("Getting related cards for {}", card_name))?
-                .as_str()
-                .ok_or_else(|| {
-                    anyhow!(
-                        "Related card object {} (for card {}) \"id\" field is not a string.",
-                        i,
-                        card_name
-                    )
-                })
-                .with_context(|| format!("Getting related cards for {}", card_name))?;
-            let part_id = ScryfallId::from_str(raw_part_id)
-                .with_context(|| format!("Getting related cards for {}", card_name))?;
-            let component_type = match part_json.get("component") {
-                None => {
-                    debug!(
-                        "Missing \"component\" field on related part for card {}",
-                        card_name
-                    );
-                    continue;
-                }
-                Some(c_value) => c_value
-                    .as_str()
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "Related card {} (for card {}) \"component\" field is not a string.",
-                            part_id,
-                            card_name
-                        )
-                    })
-                    .with_context(|| {
-                        format!("Getting related card {} for {}", part_id, card_name)
-                    })?,
-            };
-            match component_type {
-                "combo_piece" => {
-                    debug!(
-                        "Found combo piece {} related to card {}",
-                        part_id, card_name
-                    );
-                    continue;
-                }
-                "meld_part" => {
-                    debug!("Found meld part {} related to card {}", part_id, card_name);
-                    continue;
-                }
-                "meld_result" => debug!(
-                    "Found meld result {} related to card {}",
-                    part_id, card_name
-                ),
-                "token" => debug!("Found token {} related to card {}", part_id, card_name),
-                other => warn!(
-                    "Found unexpected related card component type {:?} for {} related to card {}",
-                    other, part_id, card_name
-                ),
-            };
-
+        let card_name = card.combined_name();
+        for part_id in get_parts(card.clone()) {
             if seen_ids.contains(&part_id) {
                 debug!("Already seen part {}", part_id);
                 continue;
             }
-            let part_card = scryfall::card_by_id(db, part_id)
-                .await
-                .with_context(|| format!("Getting related card {} for {}", part_id, card_name))?;
+            let part_card = scryfall::card_by_id(db, part_id).await.with_context(|| {
+                format!("Failed to get related card {} for {}", part_id, card_name)
+            })?;
             let part_oracle_id = part_card.oracle_id()?;
             work_queue.push_back(part_card.clone());
             parts.entry(part_oracle_id).or_insert(part_card);
@@ -275,7 +291,7 @@ async fn collect_card_piles(
             .map(|(c, _)| c.clone()),
     )
     .await
-    .with_context(|| format!("Getting tokens for deck {}", deck_url))?;
+    .with_context(|| format!("Failed to get tokens for deck {}", deck_url))?;
     let tokens: Vec<_> = tokens.into_iter().map(|t| (t, 1)).collect();
     if !tokens.is_empty() {
         debug!(
@@ -425,15 +441,8 @@ async fn make_pages<R: AsyncCommands>(
             let wrapper_card = card.clone();
             let card_name = card.combined_name();
             let future = async move {
-                let card_id: ScryfallId = task_card.id()?;
                 debug!("Loading card {}...", card_name);
-                let image = task_card.ensure_image(&api).await.with_context(|| {
-                    format!(
-                        "Loading image for card {} ({})",
-                        task_card.combined_name(),
-                        card_id,
-                    )
-                })?;
+                let image = task_card.ensure_image(&api).await?;
                 let image = fixup_size(image).await;
                 debug!("Finished loading card {}", card_name);
                 Ok((wrapper_card, image))
@@ -696,10 +705,10 @@ pub async fn render_deck<R: AsyncCommands>(
     info!("Rendering deck {} ({})", deck.title, deck.id);
     let piles = collect_card_piles(db, deck)
         .await
-        .context("Collecting and sorting cards")?;
+        .context("Failed to collect and sort cards")?;
     let rendered_pages = make_pages(Arc::clone(&api), redis, &deck, Arc::new(piles.clone()))
         .await
-        .context("Rendering piles to images")?;
+        .context("Failed to render piles to images")?;
     let saved_pages = save_pages(redis, &deck, rendered_pages)
         .await
         .context("Failed to save pages")?;

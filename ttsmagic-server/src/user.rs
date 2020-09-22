@@ -36,7 +36,7 @@ impl User {
         let mut api_response: surf::Response =
             api_request.await.map_err(Error::msg).with_context(|| {
                 format!(
-                    "Geting user information from Steam API for Steam login of user {}",
+                    "Failed to get user information from Steam API for Steam login of user {}",
                     id,
                 )
             })?;
@@ -57,13 +57,15 @@ impl User {
             personaname: String,
         }
 
-        let api_response_data: SteamAPIResponse<SteamAPIPlayers> =
-            api_response.body_json().await.with_context(|| {
-                format!(
-                    "Getting user information from Steam API response for Steam login of user {}",
-                    id
-                )
-            })?;
+        let api_response_data: SteamAPIResponse<SteamAPIPlayers> = api_response
+            .body_json()
+            .await
+            .with_context(|| {
+            format!(
+                "Failed to get user information from Steam API response for Steam login of user {}",
+                id
+            )
+        })?;
 
         let player_info: &SteamAPIPlayer = api_response_data
             .response

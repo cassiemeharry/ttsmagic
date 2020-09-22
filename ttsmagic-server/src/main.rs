@@ -140,7 +140,7 @@ async fn main() -> Result<()> {
         ("render-deck", Some(render_deck_opts)) => {
             render_deck_command(scryfall_api, db_pool, &mut redis_conn, render_deck_opts)
                 .await
-                .context("Rendering a deck")?;
+                .context("Failed to render the deck")?;
         }
         ("import-old", Some(opts)) => {
             let user_id = match opts.value_of("user_id") {
@@ -179,7 +179,7 @@ async fn render_deck_command(
 ) -> Result<()> {
     let user = user::User::get_or_create_demo_user(&mut db_pool)
         .await
-        .context("Creating demo user")?;
+        .context("Failed to get the demo user")?;
     let url_str = opts.value_of("url").unwrap();
     let url = url::Url::parse(&url_str)?;
     let mut deck;
@@ -187,16 +187,13 @@ async fn render_deck_command(
         let mut tx = db_pool.begin().await?;
         deck = deck::load_deck(&mut tx, redis, &user, url)
             .await
-            .context("Loading deck")?;
+            .context("Failed to load deck")?;
         tx.commit().await?;
     }
     let rendered;
     {
         let mut tx = db_pool.begin().await?;
-        rendered = deck
-            .render(scryfall_api, &mut tx, redis)
-            .await
-            .context("Rendering deck")?;
+        rendered = deck.render(scryfall_api, &mut tx, redis).await?;
         tx.commit().await?;
     }
 

@@ -103,10 +103,12 @@ ORDER BY
         info!("Importing {}'s deck with URL {}", user, url);
         let mut deck = crate::deck::load_deck(&mut load_tx, redis, &user, url.clone())
             .await
-            .with_context(|| format!("Loading deck for {} at URL {}", user, url))?;
+            .with_context(|| format!("Failed to load deck for {} at URL {}", user, url))?;
         deck.render(scryfall_api.clone(), &mut load_tx, redis)
             .await
-            .with_context(|| format!("Rendering deck {} for {} URL {}", deck.id, user, url))?;
+            .with_context(|| {
+                format!("Failed to render deck {} for {} URL {}", deck.id, user, url)
+            })?;
         load_tx.commit().await?;
         info!(
             "Finished import deck {} ({}) for {}",
@@ -216,7 +218,7 @@ ORDER BY user_id ASC, url ASC
         .fetch(db);
         let mut to_check = Vec::new();
         while let Some(row_result) = stream.next().await {
-            let row = row_result.context("Getting list of decks to cleanup")?;
+            let row = row_result.context("Failed to get list of decks to cleanup")?;
             let user_id: u64 = row.get::<i64, _>("user_id") as u64;
             let user_id = UserId::from(user_id);
             let url_str: String = row.get("url");
@@ -237,7 +239,7 @@ ORDER BY user_id ASC, url ASC
     for (deck_id, user_id, title, url) in decks_to_check {
         cleanup_deck(db, deck_id, user_id, title, url)
             .await
-            .with_context(|| format!("Cleaning up deck {}", deck_id))?;
+            .with_context(|| format!("Failed to clean up deck {}", deck_id))?;
     }
 
     Ok(())

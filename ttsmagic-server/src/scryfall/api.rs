@@ -224,15 +224,15 @@ impl ScryfallApi {
             let image =
                 image::load_from_memory_with_format(bytes.as_slice(), format.raw())?.to_rgb();
 
-            let mut f = MediaFile::create(&rel_filename)
-                .await
-                .context("Saving card image file from Scryfall")?;
+            let mut f = MediaFile::create(&rel_filename).await.context(
+                "Failed to begin saving card image file from Scryfall to storage backend",
+            )?;
             f.write_all(bytes.as_slice())
                 .await
-                .context("Writing card image file")?;
-            f.close()
-                .await
-                .context("Finishing saving card image file from Scryfall")?;
+                .context("Failed to write card image file")?;
+            f.close().await.context(
+                "Failed to finalize saving card image file from Scryfall to storage backend",
+            )?;
             debug!(
                 "Saved card image (format: {:?}) for {} to {}",
                 format, id, rel_filename,

@@ -192,10 +192,10 @@ impl<'a, DB: Executor<Database = Postgres> + Send> SessionGetExt<'a>
             let cookie_header = headers
                 .get("Cookie")
                 .ok_or_else(|| anyhow!("Cookie header is missing"))
-                .context("Getting session information from http::Request")?;
+                .context("Failed to get session information from http::Request")?;
             let cookie_str = cookie_header
                 .to_str()
-                .context("Getting session information from http::Request")?;
+                .context("Failed to get session information from http::Request")?;
             let s_opt = from_cookie_header(db, redis, cookie_str).await?;
             Ok(s_opt)
         }
@@ -255,12 +255,17 @@ pub async fn from_cookie_header(
             continue;
         }
         let cookie = cookie::Cookie::parse(cookie_str)
-            .with_context(|| format!("Parsing cookie header {:?}", header_value))?;
+            .with_context(|| format!("Failed to parse cookie header {:?}", header_value))?;
         let cookie_value: std::borrow::Cow<str> =
             percent_encoding::percent_decode(cookie.value().as_bytes()).decode_utf8()?;
         let session_opt = Session::load_from_cache(db, redis, &cookie_value)
             .await
-            .with_context(|| format!("Loading from cache based on cookie {:?}", &cookie_value))?;
+            .with_context(|| {
+                format!(
+                    "Failed to load session data from cache based on cookie {:?}",
+                    &cookie_value
+                )
+            })?;
         return Ok(session_opt);
     }
     Ok(None)

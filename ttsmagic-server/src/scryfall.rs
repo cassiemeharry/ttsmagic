@@ -300,7 +300,7 @@ LIMIT 1
     .await
     .with_context(|| {
         format!(
-            "Checking database for card with name {:?} for oracle ID",
+            "Failed to get oracle ID for card with name {:?} from the database",
             name
         )
     })?;
@@ -473,7 +473,7 @@ pub async fn load_bulk<P: AsRef<Path>>(
     let cards_iter = ParseIter::new(bytes.as_slice(), estimated_count);
     info!("Saving cards from Scryfall into database...");
     for card_result in pbr::PbIter::new(cards_iter) {
-        let card = card_result.context("Loading cards from Scryfall bulk data")?;
+        let card = card_result.context("Failed to load cards from Scryfall bulk data")?;
         ScryfallCard::save_from_json(db, card).await?;
     }
     let end = std::time::Instant::now();

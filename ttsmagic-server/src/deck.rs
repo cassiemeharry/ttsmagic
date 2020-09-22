@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use redis::AsyncCommands;
 use serde_json::Value;
 use sqlx::{Executor, Postgres, Row};
-use std::{collections::HashMap, convert::TryInto};
+use std::{collections::HashMap, convert::TryInto, fmt};
 use ttsmagic_types::{server_to_frontend as s2f, DeckColorIdentity, DeckId, UserId};
 use url::Url;
 use uuid::Uuid;
@@ -81,6 +81,21 @@ pub struct UnparsedDeck {
     pub id: DeckId,
     pub user_id: UserId,
     pub url: Url,
+    pub title: String,
+}
+
+impl fmt::Display for UnparsedDeck {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.title.is_empty() || self.title.as_str() == self.url.as_str() {
+            write!(f, "unparsed deck {:?} from URL {}", self.id, self.url)
+        } else {
+            write!(
+                f,
+                "unparsed deck {:?} ({:?}) from URL {}",
+                self.title, self.id, self.url
+            )
+        }
+    }
 }
 
 impl UnparsedDeck {
@@ -144,7 +159,7 @@ ON CONFLICT (id) DO UPDATE SET user_id = $2, title = $3, url = $4;",
             user.id,
             s2f::Notification::DeckParseStarted {
                 deck_id: deck_id,
-                title,
+                title: title.clone(),
                 url: url.clone(),
             },
         )
@@ -154,6 +169,7 @@ ON CONFLICT (id) DO UPDATE SET user_id = $2, title = $3, url = $4;",
             id: deck_id,
             user_id: user.id,
             url,
+            title,
         })
     }
 
@@ -458,6 +474,8 @@ WHERE user_id = $1;",
 
 #[async_trait(?Send)]
 pub trait DeckParser<DB: Executor<Database = Postgres>, R: AsyncCommands> {
+    fn name(&self) -> &'static str;
+
     fn canonical_deck_url(&self) -> Url;
 
     async fn parse_deck(&self, db: &mut DB, redis: &mut R, unparsed: UnparsedDeck) -> Result<Deck>;
@@ -500,13 +518,20 @@ pub async fn load_deck(
 ) -> Result<Deck> {
     let loader = match find_loader(url.clone()) {
         Some(l) => l,
-        None => return Err(anyhow!("Failed to find loader matching url {}", url)),
+        None => {
+            return Err(anyhow!(
+                "Unknown deck site. Only Deckbox and TappedOut are supported."
+            ))
+            .with_context(|| format!("Failed to load deck from URL {}", url));
+        }
     };
-    let unparsed = UnparsedDeck::save(db, redis, user, loader.canonical_deck_url()).await?;
+    let unparsed = UnparsedDeck::save(db, redis, user, loader.canonical_deck_url())
+        .await
+        .with_context(|| format!("Failed to save {} deck with URL {}", loader.name(), url))?;
     debug!("UnparsedDeck saved: {:?}", unparsed);
     let deck = loader
-        .parse_deck(db, redis, unparsed)
+        .parse_deck(db, redis, unparsed.clone())
         .await
-        .context("Parsing deck contents")?;
+        .with_context(|| format!("Failed to load contents of {}", unparsed))?;
     Ok(deck)
 }

@@ -167,11 +167,11 @@ pub async fn handle_redirect(request: Request<AppState>) -> tide::Result {
         .redis
         .get_async_connection()
         .await
-        .context("Creating redis connection after successful steam verification")
+        .context("Failed to create Redis connection after successful Steam verification")
         .tide_compat()?;
     let user = User::steam_login(&mut db, steam_id)
         .await
-        .context("Creating Steam login after successful verification")
+        .context("Failed to create Steam login after successful verification")
         .tide_compat()?;
     let new_session = Session::new(&mut db, user.id).await.tide_compat()?;
     let mut response =
@@ -179,7 +179,7 @@ pub async fn handle_redirect(request: Request<AppState>) -> tide::Result {
     response
         .set_session(&mut redis_conn, new_session)
         .await
-        .context("Setting session after successful Steam login")
+        .context("Failed to set session after successful Steam login")
         .tide_compat()?;
 
     Ok(response)
