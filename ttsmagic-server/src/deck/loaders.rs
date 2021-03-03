@@ -357,3 +357,169 @@ impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for 
         Ok(deck)
     }
 }
+
+pub(crate) struct ArchidektLoader {
+    id: u64,
+}
+
+impl DeckMatcher for ArchidektLoader {
+    fn match_url(url: &Url) -> Option<Self> {
+        match (url.domain(), url.path_segments()) {
+            (Some("archidekt.com"), Some(path_segments))
+            | (Some("www.archidekt.com"), Some(path_segments)) => {
+                let path_segments = path_segments.take(2).collect::<Vec<&str>>();
+                let id = match path_segments.as_slice() {
+                    ["decks", id_str] => id_str.parse().ok()?,
+                    _ => return None,
+                };
+                Some(ArchidektLoader { id })
+            }
+            _ => None,
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl<DB: Executor<Database = Postgres>, R: AsyncCommands> DeckParser<DB, R> for ArchidektLoader {
+    fn name(&self) -> &'static str {
+        "Archidekt"
+    }
+
+    fn canonical_deck_url(&self) -> Url {
+        let url_string = format!("https://archidekt.com/decks/{}", self.id);
+        Url::parse(&url_string).unwrap()
+    }
+
+    async fn parse_deck(&self, db: &mut DB, redis: &mut R, unparsed: UnparsedDeck) -> Result<Deck> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ArchidektResponse {
+            id: u64,
+            name: String,
+            cards: Vec<ArchidektResponseCardWrapper>,
+            categories: Vec<ArchidektResponseCategory>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ArchidektResponseCardWrapper {
+            card: ArchidektResponseCard,
+            quantity: u8,
+            categories: Vec<String>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ArchidektResponseCard {
+            oracle_card: ArchidektResponseOracleCard,
+            uid: uuid::Uuid,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ArchidektResponseOracleCard {
+            name: String,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ArchidektResponseCategory {
+            name: String,
+            included_in_deck: bool,
+            // is_premier: bool,
+        }
+
+        let json_url = format!("https://archidekt.com/api/decks/{}/small/", self.id);
+        let client = surf::Client::new();
+        info!("Parsing Archidekt deck at {}", json_url);
+
+        let request = client
+            .get(&json_url)
+            .middleware(crate::utils::SurfRedirectMiddleware::new());
+        let mut response = request
+            .await
+            .map_err(Error::msg)
+            .context("Failed to load deck JSON from Archidekt")?;
+        // let response_string = response
+        //     .body_string()
+        //     .await
+        //     .map_err(Error::msg)
+        //     .context("Failed to get response body from Archidekt as a String")?;
+        // debug!("Archidekt response JSON: {:?}", response_string);
+        let response_value = response
+            .body_json::<ArchidektResponse>()
+            .await
+            .map_err(Error::msg)
+            .context("Failed to parse deck JSON from Archidekt")?;
+
+        if response_value.id != self.id {
+            return Err(anyhow!("Archidekt API returned a different deck than we asked for! Got {:?}, expected {:?}", response_value.id, self.id));
+        }
+
+        let title = response_value.name;
+
+        let mut commanders = HashMap::new();
+        let mut main_deck = HashMap::with_capacity(110);
+        let mut sideboard = HashMap::new();
+
+        struct ArchidektCategoryInfo {
+            included_in_deck: bool,
+        }
+
+        let categories = {
+            let mut cs = HashMap::new();
+            for category in response_value.categories {
+                cs.insert(
+                    category.name.clone(),
+                    ArchidektCategoryInfo {
+                        included_in_deck: category.included_in_deck,
+                        // is_premier: category.is_premier,
+                    },
+                );
+            }
+            cs
+        };
+
+        for card_wrapper in response_value.cards {
+            let card_name = card_wrapper.card.oracle_card.name;
+            let card_id = card_wrapper.card.uid.into();
+            let oracle_id = {
+                let raw_card_result = scryfall::card_by_id(db, card_id).await;
+                match raw_card_result {
+                    Ok(card) => card.oracle_id().with_context(|| {
+                        format!("Failed to get Oracle ID for card {}", card_name.clone())
+                    })?,
+                    Err(_) => scryfall::oracle_id_by_name(db, &card_name)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to find a card named {:?} for Archidekt deck {:?}",
+                                card_name, self.id
+                            )
+                        })?,
+                }
+            };
+
+            let is_commander = card_wrapper.categories.iter().any(|c| c == "Commander");
+            let is_sideboard = card_wrapper
+                .categories
+                .iter()
+                .any(|c| match categories.get(c) {
+                    None => false,
+                    Some(cat) => !cat.included_in_deck,
+                });
+            if is_commander {
+                commanders.insert(oracle_id, card_name);
+            } else if is_sideboard {
+                sideboard.insert(oracle_id, (card_name, card_wrapper.quantity));
+            } else {
+                main_deck.insert(oracle_id, (card_name, card_wrapper.quantity));
+            }
+        }
+
+        let deck = unparsed
+            .save_cards(db, redis, title, commanders, main_deck, sideboard)
+            .await?;
+        Ok(deck)
+    }
+}

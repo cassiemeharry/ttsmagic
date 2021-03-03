@@ -507,6 +507,9 @@ pub fn find_loader<DB: Executor<Database = Postgres>, R: AsyncCommands>(
     if let Some(l) = loaders::TappedOutLoader::match_url(&url) {
         return Some(Box::new(l));
     }
+    if let Some(l) = loaders::ArchidektLoader::match_url(&url) {
+        return Some(Box::new(l));
+    }
     None
 }
 
@@ -520,7 +523,7 @@ pub async fn load_deck(
         Some(l) => l,
         None => {
             return Err(anyhow!(
-                "Unknown deck site. Only Deckbox and TappedOut are supported."
+                "Unknown deck site. Only Deckbox, TappedOut, and Archidekt are supported."
             ))
             .with_context(|| format!("Failed to load deck from URL {}", url));
         }
