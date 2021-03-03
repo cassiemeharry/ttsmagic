@@ -696,12 +696,49 @@ fn render_piles_to_json<'a>(
     }))
 }
 
+async fn wait_for_lock<R: AsyncCommands>(
+    redis: &mut R,
+    deck: &Deck,
+) -> Result<async_std::sync::MutexGuard<'static, ()>> {
+    use async_std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    lazy_static::lazy_static! {
+        static ref LOCK: Mutex<()> = Mutex::new(());
+    }
+    static WAITING: std::sync::atomic::AtomicUsize = AtomicUsize::new(0);
+
+    match LOCK.try_lock() {
+        Some(guard) => Ok(guard),
+        None => {
+            let waiting = WAITING.fetch_add(1, Ordering::SeqCst);
+            // Add 1 here to represent the current lock holder.
+            let queue_length =
+                NonZeroU16::new(waiting.saturating_add(1).try_into().unwrap_or(u16::MAX)).unwrap();
+            notify_user(
+                redis,
+                deck.user_id,
+                s2f::Notification::RenderProgress {
+                    deck_id: deck.id,
+                    progress: s2f::RenderProgress::Waiting { queue_length },
+                },
+            )
+            .await?;
+            let guard = LOCK.lock().await;
+            WAITING.fetch_sub(1, Ordering::SeqCst);
+            Ok(guard)
+        }
+    }
+}
+
 pub async fn render_deck<R: AsyncCommands>(
     api: Arc<ScryfallApi>,
     db: &mut impl Executor<Database = Postgres>,
     redis: &mut R,
     deck: &Deck,
 ) -> Result<RenderedDeck> {
+    let _guard = wait_for_lock(redis, deck).await?;
+
     info!("Rendering deck {} ({})", deck.title, deck.id);
     let piles = collect_card_piles(db, deck)
         .await

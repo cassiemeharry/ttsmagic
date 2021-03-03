@@ -12,6 +12,9 @@ pub struct Error {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub enum RenderProgress {
+    Waiting {
+        queue_length: NonZeroU16,
+    },
     RenderingImages {
         rendered_cards: u16,
         total_cards: NonZeroU16,

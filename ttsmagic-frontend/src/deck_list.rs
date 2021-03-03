@@ -9,6 +9,7 @@ use crate::remote_resource::RemoteResource;
 
 pub enum DeckStatus {
     Loading,
+    Waiting { queue_length: NonZeroU16 },
     RenderingCards { complete: u16, total: NonZeroU16 },
     RenderingPages { complete: u16, total: NonZeroU16 },
     Complete,
@@ -233,6 +234,11 @@ impl Component for DeckList {
                     match &mut self.decks {
                         RemoteResource::Loaded(ref mut decks) => {
                             let status = match progress {
+                                s2f::RenderProgress::Waiting { queue_length } => {
+                                    DeckStatus::Waiting {
+                                        queue_length: *queue_length,
+                                    }
+                                }
                                 s2f::RenderProgress::RenderingImages {
                                     rendered_cards,
                                     total_cards,
@@ -325,6 +331,14 @@ impl DeckList {
             </>
         };
         let (status_msg, progress_bar) = match &di.status {
+            DeckStatus::Waiting { queue_length } => (
+                {
+                    let ql = queue_length.get() - 1;
+                    let s = if ql == 1 { "" } else { "s" };
+                    format!("Waiting… ({} deck{} ahead of this one)", ql, s)
+                },
+                html! { <> </> },
+            ),
             DeckStatus::Loading => ("Loading…".to_string(), html! { <> </> }),
             DeckStatus::RenderingCards { complete, total } => (
                 format!("Loading cards"),
