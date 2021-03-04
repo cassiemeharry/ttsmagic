@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Context as _, Result};
 use async_std::{
+    channel::{self, Receiver, Sender},
     fs,
     io::{self, Read, Write},
     path::PathBuf,
     pin::Pin,
     prelude::*,
-    sync::{self, Receiver, Sender},
     task::{spawn, spawn_blocking, Context, Poll},
 };
 use futures::future::BoxFuture;
@@ -208,6 +208,7 @@ impl WritableMediaFile {
         name: String,
         mut file: fs::File,
     ) -> Result<String> {
+        let size_hint = file.metadata().await.ok().map(|m| m.len() as usize);
         let (prefix, ext): (&str, &str) = match name.rfind('.') {
             Some(dot_index) => (&name[0..dot_index], &name[dot_index + 1..]),
             None => (name.as_str(), ""),
@@ -235,7 +236,7 @@ impl WritableMediaFile {
 
         s3_client
             .use_bucket(bucket.to_string())
-            .put_object(&key, file)
+            .put_object(&key, file, size_hint)
             .await
             .tide_compat()?;
         Ok(key)
@@ -275,7 +276,7 @@ impl Write for WritableMediaFile {
 
 async fn upload_files(files: Receiver<(PathBuf, String)>, delete_after_upload: bool) -> Result<()> {
     let s3_client = make_s3_client();
-    while let Some((path, key)) = files.recv().await {
+    while let Ok((path, key)) = files.recv().await {
         let bucket = match FileBucket::for_key(&key) {
             Some(b) => b,
             None => continue,
@@ -299,9 +300,10 @@ async fn upload_files(files: Receiver<(PathBuf, String)>, delete_after_upload: b
                 path.to_string_lossy()
             )
         })?;
+        let size_hint = file.metadata().await.ok().map(|m| m.len() as usize);
         s3_client
             .use_bucket(bucket.to_string())
-            .put_object(&key, file)
+            .put_object(&key, file, size_hint)
             .await
             .tide_compat()?;
         if delete_after_upload {
@@ -347,7 +349,7 @@ fn scan_folder(
                 let path = entry.path();
                 let key = path.strip_prefix(&root)?.to_string_lossy().to_string();
                 debug!("Sending {:?} to upload task", key);
-                sender.send((path, key)).await;
+                sender.send((path, key)).await?;
                 files_found += 1;
             } else {
                 assert!(file_type.is_symlink());
@@ -362,7 +364,7 @@ pub async fn upload_all(root: PathBuf, delete_after_upload: bool) -> Result<u64>
     let root = root.join("files");
     info!("Uploading all files in {:?}", root.to_string_lossy());
 
-    let (files_sender, files_receiver) = sync::channel(1);
+    let (files_sender, files_receiver) = channel::bounded(1);
     let upload_future_fn = move |recv| -> BoxFuture<Result<()>> {
         let upload_future = upload_files(recv, delete_after_upload);
         Box::pin(upload_future)

@@ -6,6 +6,6 @@ let
   pkgs = import sources.nixpkgs {
     overlays = [ (import sources.nixpkgs-mozilla) ];
   };
-  channel = pkgs.rustChannelOfTargets "nightly" "2020-08-18" targets;
+  channel = pkgs.rustChannelOfTargets "nightly" "2021-03-01" targets;
 in
 channel

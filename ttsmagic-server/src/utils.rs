@@ -1,8 +1,8 @@
 use anyhow::Result;
 use async_std::{
+    channel::Receiver,
     pin::Pin,
     prelude::*,
-    sync::Receiver,
     task::{spawn, Context, JoinHandle, Poll},
 };
 use futures::{future::BoxFuture, Sink};

@@ -1,25 +1,24 @@
 use async_std::prelude::*;
 use futures::future::BoxFuture;
 use surf::{
-    http_types::{
-        headers::{HeaderName, HeaderValue},
-        Cookie, Method, Url, Version,
+    http::{
+        headers::{HeaderName, HeaderValues, LOCATION},
+        Error, Method, Url,
     },
-    middleware::{HttpClient, Middleware, Next, Request, Response},
+    middleware::{Middleware, Next},
+    Client, Request, Response,
 };
 use thiserror::Error as ErrorDerive;
 
 struct RequestInfo {
     method: Method,
     url: Url,
-    headers: Vec<(HeaderName, Vec<HeaderValue>)>,
-    version: Option<Version>,
-    cookies: Vec<Cookie<'static>>,
+    headers: Vec<(HeaderName, HeaderValues)>,
     body: Vec<u8>,
 }
 
 impl RequestInfo {
-    async fn new(mut req: Request) -> Result<Self, surf::http_types::Error> {
+    async fn new(mut req: Request) -> Result<Self, Error> {
         let body: Vec<u8> = {
             let req_body = req.take_body();
             let mut buffer = Vec::with_capacity(req_body.len().unwrap_or(1024));
@@ -34,26 +33,16 @@ impl RequestInfo {
                 .iter()
                 .map(|(name_ref, values_ref)| (name_ref.clone(), values_ref.clone()))
                 .collect(),
-            version: req.version(),
-            cookies: req
-                .cookies()?
-                .iter()
-                .map(|c| c.clone().into_owned())
-                .collect(),
             body,
         })
     }
 
-    fn make_request(&self) -> Result<Request, surf::http_types::Error> {
+    fn make_request(&self) -> Result<Request, Error> {
         let mut req = Request::new(self.method.clone(), self.url.clone());
         for (header_name, header_values) in self.headers.iter() {
-            req.insert_header(header_name.clone(), header_values.as_slice())?;
+            let _ = req.insert_header(header_name.clone(), header_values);
         }
 
-        req.set_version(self.version);
-        for cookie in self.cookies.iter() {
-            req.set_cookie(cookie.clone());
-        }
         req.set_body(self.body.clone());
 
         Ok(req)
@@ -84,15 +73,18 @@ impl RedirectMiddleware {
     }
 }
 
-impl<C: HttpClient + Clone> Middleware<C> for RedirectMiddleware {
-    fn handle<'a>(
+impl Middleware for RedirectMiddleware {
+    fn handle<'a, 'b, 'c>(
         &'a self,
         request: Request,
-        client: C,
-        next: Next<'a, C>,
-    ) -> BoxFuture<'a, Result<Response, surf::Error>> {
-        let location_header = HeaderName::from_ascii(b"Location".to_vec()).unwrap();
-
+        client: Client,
+        next: Next<'b>,
+    ) -> BoxFuture<'c, Result<Response, surf::Error>>
+    where
+        'a: 'c,
+        'b: 'c,
+        Self: 'c,
+    {
         Box::pin(async move {
             trace!("Starting to handle outbound request in RedirectMiddleware");
             let mut request_data = RequestInfo::new(request).await?;
@@ -111,7 +103,7 @@ impl<C: HttpClient + Clone> Middleware<C> for RedirectMiddleware {
                     };
                     // FIXME: remove the unwraps and direct indexing in favor of
                     // panic-free versions.
-                    let location_values = match resp.header(&location_header) {
+                    let location_values = match resp.header(&LOCATION) {
                         Some(lvs) => lvs,
                         None => {
                             return Err(RedirectMiddlewareError::MissingLocationHeader(
@@ -120,7 +112,7 @@ impl<C: HttpClient + Clone> Middleware<C> for RedirectMiddleware {
                             .into())
                         }
                     };
-                    if location_values.len() > 1 {
+                    if location_values.iter().count() > 1 {
                         warn!(
                             "Found multiple Location header values: {:?}",
                             location_values

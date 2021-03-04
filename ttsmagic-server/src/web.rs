@@ -35,6 +35,16 @@ impl<T> TideErrorCompat<T> for std::result::Result<T, tide::Error> {
     }
 }
 
+pub trait SurfErrorCompat<T> {
+    fn surf_compat(self) -> anyhow::Result<T>;
+}
+
+impl<T> SurfErrorCompat<T> for std::result::Result<T, surf::Error> {
+    fn surf_compat(self) -> anyhow::Result<T> {
+        self.map_err(|e| anyhow::Error::msg(e))
+    }
+}
+
 pub type AppState = Arc<AppStateInner>;
 
 #[derive(Debug)]
@@ -66,8 +76,8 @@ pub async fn run_server(
     });
     let mut app = tide::with_state(state.clone());
 
-    app.middleware(tide::log::LogMiddleware::new());
-    app.middleware(session::SessionMiddleware::new());
+    app.with(tide::log::LogMiddleware::new());
+    app.with(session::SessionMiddleware::new());
 
     app.at("/").get(app::home_page);
     app.at("/decks/:deck_id").get(deck::download_deck_json);
@@ -84,7 +94,8 @@ pub async fn run_server(
         host, web_port, ws_port
     );
 
-    let app_listen = app.listen((host, web_port));
+    let listener = async_std::net::TcpListener::bind((host, web_port)).await?;
+    let app_listen = app.listen(listener);
     pin_mut!(app_listen);
 
     let ws_listen = ws::listen((host, ws_port), state);

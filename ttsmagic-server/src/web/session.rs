@@ -4,7 +4,10 @@ use redis::AsyncCommands;
 use ring::hmac;
 use sqlx::{Executor, Postgres};
 use std::str::FromStr;
-use tide::{http::Cookie, Next, Request, Response};
+use tide::{
+    http::{headers::COOKIE, Cookie},
+    Next, Request, Response,
+};
 use ttsmagic_types::UserId;
 use uuid::Uuid;
 
@@ -130,7 +133,7 @@ impl Session {
             .path("/")
             // .secure(true)
             .http_only(true)
-            .max_age(chrono::Duration::days(7))
+            .max_age(time::Duration::days(7))
             .finish()
     }
 
@@ -213,7 +216,7 @@ impl<'a, DB: Executor<Database = Postgres> + Send> SessionGetExt<'a>
 
 impl<'a> SessionGetExt<'static> for &'a tide::Request<AppState> {
     fn get_session(self) -> BoxFuture<'static, Option<Session>> {
-        let local: Option<SessionState> = self.local::<SessionState>().cloned();
+        let local: Option<SessionState> = self.ext::<SessionState>().cloned();
         let session_opt = local.map(|ss| ss.session);
         Box::pin(async move { session_opt })
     }
@@ -228,7 +231,7 @@ impl<'a> SessionSetExt<'a> for &'a mut Response {
         Box::pin(async move {
             session.save_to_cache(redis).await?;
             let cookie = session.make_cookie();
-            self.set_cookie(cookie);
+            self.insert_cookie(cookie);
             Ok(())
         })
     }
@@ -238,7 +241,7 @@ impl<'a> SessionClearExt<'a> for &'a mut Response {
     fn clear_session(self) -> BoxFuture<'a, Result<Self>> {
         Box::pin(async move {
             let cookie = Session::make_empty_cookie();
-            self.set_cookie(cookie);
+            self.insert_cookie(cookie);
             Ok(self)
         })
     }
@@ -287,7 +290,7 @@ impl SessionMiddleware {
     }
 
     async fn middleware_inner<'a>(
-        req: Request<AppState>,
+        mut req: Request<AppState>,
         next: Next<'a, AppState>,
     ) -> tide::Result {
         let mut session = Session {
@@ -301,11 +304,11 @@ impl SessionMiddleware {
             let db_pool = &state.db_pool;
             let mut db = db_pool.acquire().await?;
             let cookie_header_values = req
-                .header(&("Cookie".parse()?))
-                .map(Vec::clone)
-                .unwrap_or(vec![]);
+                .header(&COOKIE)
+                .cloned()
+                .unwrap_or_else(|| vec![].into_iter().collect());
             let mut cookie_session = None;
-            for hv in cookie_header_values {
+            for hv in cookie_header_values.iter() {
                 match from_cookie_header(&mut db, &mut redis_conn, hv.as_str()).await {
                     Ok(s) => cookie_session = s,
                     Err(e) => error!("Failed to parse cookie header {:?}: {:?}", hv.as_str(), e),
@@ -328,18 +331,23 @@ impl SessionMiddleware {
             });
         }
 
-        let req_with_session = req.set_local(SessionState { session });
-        let resp = next.run(req_with_session).await?;
+        let _ = req.set_ext(SessionState { session });
+        let resp = next.run(req).await;
         Ok(resp)
     }
 }
 
 impl tide::Middleware<AppState> for SessionMiddleware {
-    fn handle<'a>(
+    fn handle<'a, 'b, 'c>(
         &'a self,
         cx: Request<AppState>,
-        next: Next<'a, AppState>,
-    ) -> BoxFuture<'a, tide::Result> {
+        next: Next<'b, AppState>,
+    ) -> BoxFuture<'c, tide::Result>
+    where
+        'a: 'c,
+        'b: 'c,
+        Self: 'c,
+    {
         Box::pin(async move { Self::middleware_inner(cx, next).await })
     }
 }

@@ -78,6 +78,10 @@ impl Component for Model {
         }
     }
 
+    fn change(&mut self, _props: Self::Properties) -> ShouldRender {
+        false
+    }
+
     fn update(&mut self, msg: Self::Message) -> ShouldRender {
         match msg {
             Msg::IgnoreError(i) => {

@@ -6,6 +6,8 @@ use std::fmt;
 use ttsmagic_types::UserId;
 use url::Url;
 
+use crate::web::SurfErrorCompat as _;
+
 #[derive(Clone, Debug)]
 pub struct User {
     pub id: UserId,
@@ -60,12 +62,13 @@ impl User {
         let api_response_data: SteamAPIResponse<SteamAPIPlayers> = api_response
             .body_json()
             .await
+            .surf_compat()
             .with_context(|| {
-            format!(
+                format!(
                 "Failed to get user information from Steam API response for Steam login of user {}",
                 id
             )
-        })?;
+            })?;
 
         let player_info: &SteamAPIPlayer = api_response_data
             .response

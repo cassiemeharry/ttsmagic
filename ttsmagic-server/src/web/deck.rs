@@ -1,5 +1,8 @@
 use std::str::FromStr;
-use tide::{http::headers::HeaderName, Request, Response, Result, StatusCode};
+use tide::{
+    http::{headers::HeaderName, mime::Mime},
+    Request, Response, Result, StatusCode,
+};
 use ttsmagic_types::DeckId;
 
 use super::AppState;
@@ -16,7 +19,7 @@ pub async fn download_deck_json(req: Request<AppState>) -> Result {
                 return Err(tide::Error::from_str(StatusCode::NotFound, "Invalid deck"));
             }
         }
-    };
+    }
     macro_rules! opt_404 {
         ($opt:expr) => {
             match $opt {
@@ -24,7 +27,7 @@ pub async fn download_deck_json(req: Request<AppState>) -> Result {
                 None => return Err(tide::Error::from_str(StatusCode::NotFound, "Invalid deck")),
             }
         };
-    };
+    }
     macro_rules! result_404 {
         ($result:expr, $msg:literal, $($arg:expr),* $(,)*) => {
             match $result {
@@ -35,7 +38,7 @@ pub async fn download_deck_json(req: Request<AppState>) -> Result {
                 }
             }
         };
-    };
+    }
     let user = {
         let session_opt_future = req.get_session();
         let session_opt = session_opt_future.await;
@@ -43,7 +46,7 @@ pub async fn download_deck_json(req: Request<AppState>) -> Result {
     };
 
     let deck_id: DeckId = {
-        let param: String = req.param("deck_id").unwrap();
+        let param: &str = req.param("deck_id").unwrap();
         ensure_404!(
             param.ends_with(".json") && param.len() > 5,
             "Invalid deck ID (expected something like {:?}), got {:?}",
@@ -75,28 +78,24 @@ pub async fn download_deck_json(req: Request<AppState>) -> Result {
                 "Failed to create Redis connection: {}",
             );
             let rendered_result = deck
-                .render(
-                    state.scryfall_api.clone(),
-                    &mut db,
-                    &mut redis_conn,
-                )
+                .render(state.scryfall_api.clone(), &mut db, &mut redis_conn)
                 .await;
             let rendered = result_404!(rendered_result, "Failed to render deck {}: {}", deck.id);
             rendered.json_description
         }
     };
 
-    let json_mime = FromStr::from_str("application/json".into()).unwrap();
+    let json_mime: Mime = "application/json".parse().unwrap();
     let rendered_json = serde_json::to_string_pretty(&deck_json).unwrap();
-    let resp = Response::new(StatusCode::Ok)
-        .body_string(rendered_json)
-        .set_mime(json_mime)
-        .set_header(
-            HeaderName::from_ascii(b"Content-Disposition".to_vec()).unwrap(),
-            format!(
-                "attachment; filename=\"{}.json\"",
-                deck.title.replace('"', "'")
-            ),
-        );
+    let mut resp = Response::new(StatusCode::Ok);
+    resp.set_body(rendered_json);
+    resp.set_content_type(json_mime);
+    resp.insert_header(
+        HeaderName::from_bytes(b"Content-Disposition".to_vec()).unwrap(),
+        format!(
+            "attachment; filename=\"{}.json\"",
+            deck.title.replace('"', "'")
+        ),
+    );
     Ok(resp)
 }

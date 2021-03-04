@@ -3,23 +3,29 @@ use async_std::{prelude::*, sync::Mutex, task};
 use chrono::prelude::*;
 use image::RgbImage;
 use serde::Deserialize;
+use tide::http::headers::{LOCATION, USER_AGENT};
 
 use super::ScryfallId;
-use crate::files::MediaFile;
+use crate::{
+    files::MediaFile,
+    web::{SurfErrorCompat as _, TideErrorCompat as _},
+};
 
-lazy_static::lazy_static! {
-    static ref LOCATION_HEADER: tide::http::headers::HeaderName =
-        tide::http::headers::HeaderName::from_ascii(b"Location".to_vec())
-        .unwrap();
-    static ref USER_AGENT_HEADER: tide::http::headers::HeaderName =
-        tide::http::headers::HeaderName::from_ascii(b"User-Agent".to_vec())
-        .unwrap();
-}
+// lazy_static::lazy_static! {
+//     static ref LOCATION_HEADER: tide::http::headers::HeaderName =
+//         tide::http::headers::HeaderName::from_ascii(b"Location".to_vec())
+//         .unwrap();
+//     static ref USER_AGENT_HEADER: tide::http::headers::HeaderName =
+//         tide::http::headers::HeaderName::from_ascii(b"User-Agent".to_vec())
+//         .unwrap();
+// }
 
 #[derive(Copy, Clone, Debug)]
 pub enum ImageFormat {
     PNG,
+    #[allow(unused)]
     BorderCrop,
+    #[allow(unused)]
     ArtCrop,
     Large,
     Normal,
@@ -64,6 +70,7 @@ impl ImageFormat {
 #[derive(Copy, Clone, Debug)]
 pub enum ImageFace {
     Front,
+    #[allow(unused)]
     Back,
 }
 
@@ -85,7 +92,7 @@ impl Default for ImageFace {
 #[derive(Debug)]
 pub struct ScryfallApi {
     last_query: Mutex<DateTime<Utc>>,
-    client: surf::Client<http_client::isahc::IsahcClient>,
+    client: surf::Client,
 }
 
 impl ScryfallApi {
@@ -138,7 +145,7 @@ impl ScryfallApi {
                 let mut buffer = vec![];
                 f.read_to_end(&mut buffer).await?;
                 match image::load_from_memory_with_format(buffer.as_slice(), format.raw()) {
-                    Ok(i) => return Ok(i.to_rgb()),
+                    Ok(i) => return Ok(i.to_rgb8()),
                     Err(e) => {
                         error!(
                             "Error opening image at {}, deleting the file: {}",
@@ -155,7 +162,7 @@ impl ScryfallApi {
                 let mut buffer = vec![];
                 f.read_to_end(&mut buffer).await?;
                 match image::load_from_memory_with_format(buffer.as_slice(), format.raw()) {
-                    Ok(i) => return Ok(i.to_rgb()),
+                    Ok(i) => return Ok(i.to_rgb8()),
                     Err(e) => {
                         error!(
                             "Error opening image at {}, deleting the file: {}",
@@ -196,12 +203,11 @@ impl ScryfallApi {
                     200 => break 'redirect r,
                     302 => {
                         let location = r
-                            .header(&LOCATION_HEADER)
-                            .and_then(|headers| headers.first())
-                            .map(|h| h.as_str())
+                            .header(&LOCATION)
+                            .map(|headers| headers.last().as_str())
                             .ok_or_else(|| {
-                                anyhow!("Missing Location header in Scryfall image redirect")
-                            })?;
+                            anyhow!("Missing Location header in Scryfall image redirect")
+                        })?;
                         debug!("Got redirect from {} to {}", url, location);
                         url = location.to_string();
                         continue 'redirect;
@@ -220,9 +226,9 @@ impl ScryfallApi {
                     }
                 }
             };
-            let bytes = response.body_bytes().await?;
+            let bytes = response.body_bytes().await.tide_compat()?;
             let image =
-                image::load_from_memory_with_format(bytes.as_slice(), format.raw())?.to_rgb();
+                image::load_from_memory_with_format(bytes.as_slice(), format.raw())?.to_rgb8();
 
             let mut f = MediaFile::create(&rel_filename).await.context(
                 "Failed to begin saving card image file from Scryfall to storage backend",
@@ -261,7 +267,7 @@ impl ScryfallApi {
             download_uri: &'a str,
         }
 
-        let bulk_response = response.body_bytes().await?;
+        let bulk_response = response.body_bytes().await.surf_compat()?;
         let bulk_response: BulkDataListResponse = serde_json::from_slice(bulk_response.as_slice())?;
         debug!(
             "Got bulk downloads listing with {} items",
@@ -280,8 +286,8 @@ impl ScryfallApi {
 
     async fn get(&self, url: &str) -> Result<surf::Response> {
         self.delay().await;
-        let request = self.client.get(url).set_header(
-            (&*USER_AGENT_HEADER).clone(),
+        let request = self.client.get(url).header(
+            USER_AGENT,
             concat!("ttsmagic.cards/", env!("CARGO_PKG_VERSION")),
         );
         Ok(request.await.map_err(Error::msg)?)

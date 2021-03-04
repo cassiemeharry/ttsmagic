@@ -134,7 +134,7 @@ async fn handle_connection(
                         ws_stream.send(Message::Pong(contents)).await?;
                         continue;
                     }
-                    Message::Pong(contents) => {
+                    Message::Pong(_contents) => {
                         continue;
                     }
                     Message::Close(close_msg) => {
@@ -144,8 +144,8 @@ async fn handle_connection(
                 };
                 let user = user.clone();
                 let api = state.scryfall_api.clone();
-                let mut db_conn = state.db_pool.acquire().await?;
-                let mut redis_conn = state
+                let db_conn = state.db_pool.acquire().await?;
+                let redis_conn = state
                     .redis
                     .get_async_connection()
                     .await

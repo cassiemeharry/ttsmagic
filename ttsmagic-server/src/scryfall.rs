@@ -401,7 +401,7 @@ pub async fn load_bulk<P: AsRef<Path>>(
                         Err(e) => return Some(Err(e.into())),
                     }
                 };
-            };
+            }
 
             let position = some_error!(self.cursor.seek(std::io::SeekFrom::Current(1)));
             if (position + 1) >= self.len {

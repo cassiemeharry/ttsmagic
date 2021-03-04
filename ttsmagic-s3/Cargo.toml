@@ -7,21 +7,14 @@ edition = "2018"
 [dependencies]
 async-std = "1"
 futures = "0.3"
-http-client = "*"
-http-types = "1"
-isahc = "=0.9.6"
 log = "0.4"
 pretty_env_logger = "0.4"
+surf = "2"
 url = "2"
 
 [dependencies.rusoto_signature]
 default-features = false
 version = "0.45"
-
-[dependencies.surf]
-# default-features = false
-# features = ["h1-client"]
-version = "2.0.0-alpha.0"
 
 [dev-dependencies]
 pretty_assertions = "0.6"

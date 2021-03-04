@@ -401,7 +401,7 @@ lazy_static::lazy_static! {
         debug!("Loading hidden image");
         let bytes = StaticFiles::get("ttsmagic_hidden_face.png")
             .expect("ttsmagic_hidden_face.png is missing from static folder");
-        let image = image::load_from_memory(&bytes).expect("Failed to load static file ttsmagic_hidden_face.png").to_rgb();
+        let image = image::load_from_memory(&bytes).expect("Failed to load static file ttsmagic_hidden_face.png").to_rgb8();
         async_std::task::block_on(fixup_size(image))
     };
 }

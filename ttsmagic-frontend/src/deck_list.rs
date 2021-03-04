@@ -147,6 +147,15 @@ impl Component for DeckList {
         }
     }
 
+    fn change(&mut self, props: Self::Properties) -> ShouldRender {
+        if !Rc::ptr_eq(&self.socket, &props.socket) {
+            self.socket = props.socket;
+            true
+        } else {
+            false
+        }
+    }
+
     fn update(&mut self, msg: Self::Message) -> ShouldRender {
         let should_render = match msg {
             Msg::DeleteDeck(deck_id) => {

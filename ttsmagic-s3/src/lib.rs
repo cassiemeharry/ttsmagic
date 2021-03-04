@@ -13,10 +13,8 @@ extern crate log;
 
 use async_std::{io::Read, prelude::*};
 use futures::future::BoxFuture;
-use http_client::isahc::IsahcClient;
-use http_types::Error;
 use std::{convert::TryInto, time::Duration};
-use surf::middleware::HttpClient;
+use surf::{http::Error, middleware::Middleware};
 use url::Url;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -53,7 +51,7 @@ impl S3Region {
         let mut endpoint: Url = endpoint.parse()?;
         if !endpoint.scheme().starts_with("http") {
             if let Err(()) = endpoint.set_scheme("https") {
-                http_types::bail!("Failed to set scheme in S3Region::new");
+                surf::http::bail!("Failed to set scheme in S3Region::new");
             }
         }
         Ok(Self {
@@ -75,13 +73,18 @@ impl SignedContentMiddleware {
     }
 }
 
-impl<C: HttpClient> surf::middleware::Middleware<C> for SignedContentMiddleware {
-    fn handle<'a>(
+impl Middleware for SignedContentMiddleware {
+    fn handle<'a, 'b, 'c>(
         &'a self,
-        mut req: surf::middleware::Request,
-        client: C,
-        next: surf::middleware::Next<'a, C>,
-    ) -> BoxFuture<'a, Result<surf::middleware::Response, Error>> {
+        mut req: surf::Request,
+        client: surf::Client,
+        next: surf::middleware::Next<'b>,
+    ) -> BoxFuture<'c, Result<surf::Response, Error>>
+    where
+        'a: 'c,
+        'b: 'c,
+        Self: 'c,
+    {
         Box::pin(async move {
             add_aws4_signature(&self.creds, &self.region, &mut req).await?;
             let result = next.run(req, client).await;
@@ -102,7 +105,7 @@ impl<C: HttpClient> surf::middleware::Middleware<C> for SignedContentMiddleware 
 async fn make_rusoto_signedrequest(
     creds: &S3Credentials,
     region: &S3Region,
-    request: &mut surf::middleware::Request,
+    request: &mut surf::Request,
 ) -> Result<rusoto_signature::signature::SignedRequest, Error> {
     trace!(
         "Adding AWS4 signature for region {:?} and creds {:?}",
@@ -199,42 +202,22 @@ fn generate_presigned_url(
 async fn add_aws4_signature(
     creds: &S3Credentials,
     region: &S3Region,
-    request: &mut surf::middleware::Request,
+    request: &mut surf::Request,
 ) -> Result<(), Error> {
     let signed = make_rusoto_signedrequest(creds, region, request).await?;
 
     for (name, values_list) in signed.headers().iter() {
-        let header_name = name.as_str().try_into().unwrap();
+        let header_name: surf::http::headers::HeaderName = name.as_str().try_into().unwrap();
         request.remove_header(&header_name);
         let mut values = Vec::with_capacity(values_list.len());
         for val_bytes in values_list.iter() {
-            let hv = http_types::headers::HeaderValue::from_ascii(val_bytes)?;
+            let hv = surf::http::headers::HeaderValue::from_bytes(val_bytes.clone())?;
             values.push(hv);
         }
-        request.insert_header(header_name, &*values)?;
+        let _ = request.insert_header(header_name, &*values);
     }
 
     Ok(())
-}
-
-#[repr(transparent)]
-#[derive(Debug)]
-struct ClientWrapper {
-    inner: surf::Client<IsahcClient>,
-}
-
-impl ClientWrapper {
-    fn get(&self, url: http_types::Url) -> surf::Request<impl HttpClient> {
-        self.inner.get(url)
-    }
-
-    fn head(&self, url: http_types::Url) -> surf::Request<impl HttpClient> {
-        self.inner.head(url)
-    }
-
-    fn put(&self, url: http_types::Url) -> surf::Request<impl HttpClient> {
-        self.inner.put(url)
-    }
 }
 
 /// Interactions with S3 start here.
@@ -242,34 +225,20 @@ impl ClientWrapper {
 pub struct S3Client {
     creds: S3Credentials,
     region: S3Region,
-    client: ClientWrapper,
+    client: surf::Client,
 }
 
 impl S3Client {
-    fn new_isahc(region: S3Region, creds: S3Credentials) -> Self {
-        use isahc::{config::Configurable, HttpClient as IsahcClientBase};
-        let inner = IsahcClientBase::builder()
-            .timeout(Duration::from_secs(60))
-            .build()
-            .unwrap();
-        let middle = IsahcClient::from_client(inner);
-        let client = surf::Client::with_client(middle);
+    /// Construct a new S3 client with the given region and credentials.
+    pub fn new(region: S3Region, creds: S3Credentials) -> Self {
+        let client = surf::Client::new();
         Self {
             creds,
             region,
-            client: ClientWrapper { inner: client },
+            client,
         }
     }
-}
 
-impl S3Client {
-    /// Initialize the S3 client with a region and a set of credentials.
-    pub fn new(region: S3Region, creds: S3Credentials) -> Self {
-        S3Client::new_isahc(region, creds)
-    }
-}
-
-impl S3Client {
     /// Focus on a specific S3 bucket.
     pub fn use_bucket(&self, name: impl ToString) -> S3BucketHandle {
         let bucket_name = name.to_string();
@@ -281,8 +250,8 @@ impl S3Client {
     }
 
     #[inline]
-    fn signed_request<C: HttpClient>(&self, req: surf::Request<C>) -> surf::Request<C> {
-        req.middleware(SignedContentMiddleware::new(
+    fn signed_request(&self, req: impl Into<surf::RequestBuilder>) -> surf::RequestBuilder {
+        req.into().middleware(SignedContentMiddleware::new(
             self.creds.clone(),
             self.region.clone(),
         ))
@@ -316,7 +285,7 @@ impl S3BucketHandle<'_> {
         );
         let url = self.file_url(key);
         let req = self.client.signed_request(self.client.client.head(url));
-        match req.await {
+        match self.client.client.send(req).await {
             Ok(resp) => match resp.status() as u16 {
                 404 => Ok(false),
                 200 => Ok(true),
@@ -337,14 +306,15 @@ impl S3BucketHandle<'_> {
     }
 
     /// Upload a file.
-    pub async fn put_object<F>(&self, key: &str, file: F) -> Result<()>
+    pub async fn put_object<F>(&self, key: &str, file: F, size_hint: Option<usize>) -> Result<()>
     where
         F: Read + Send + Sync + Unpin + 'static,
     {
         info!("Uploading file {:?} to bucket {:?}", key, self.bucket_name);
         let url = self.file_url(key);
         let file_buffer = async_std::io::BufReader::new(file);
-        let req = self.client.client.put(url).body(file_buffer);
+        let body = surf::Body::from_reader(file_buffer, size_hint);
+        let req = self.client.client.put(url).body(body);
         let req = self.client.signed_request(req);
         let _resp = req.await?;
         Ok(())
@@ -480,7 +450,11 @@ mod tests {
             use async_std::prelude::*;
 
             let f = async_std::io::BufReader::new(CONTENT);
-            let _: () = client.use_bucket(BUCKET).put_object(PATH, f).await.unwrap();
+            let _: () = client
+                .use_bucket(BUCKET)
+                .put_object(PATH, f, Some(CONTENT.len()))
+                .await
+                .unwrap();
             let mut buffer = Vec::with_capacity(CONTENT.len());
             let mut resp = client.use_bucket(BUCKET).get_object(PATH).await.unwrap();
             resp.read_to_end(&mut buffer).await.unwrap();

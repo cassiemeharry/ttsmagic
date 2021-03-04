@@ -13,5 +13,5 @@ features = ["serde"]
 version = "2"
 
 [dependencies.uuid]
-features = ["serde", "v4"]
+features = ["serde"]
 version = "0.8"

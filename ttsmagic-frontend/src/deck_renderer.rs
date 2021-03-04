@@ -34,6 +34,15 @@ impl Component for DeckRenderer {
         }
     }
 
+    fn change(&mut self, props: Self::Properties) -> ShouldRender {
+        if !Rc::ptr_eq(&self.socket, &props.socket) {
+            self.socket = props.socket;
+            true
+        } else {
+            false
+        }
+    }
+
     fn update(&mut self, msg: Self::Message) -> ShouldRender {
         match msg {
             Msg::RenderDeck => match self.parsed_url.clone() {
