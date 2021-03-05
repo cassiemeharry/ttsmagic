@@ -181,7 +181,7 @@ impl<'a, DB: Executor<Database = Postgres> + Send> SessionGetExt<'a>
     for (
         &'a mut DB,
         &'a mut redis::aio::Connection,
-        &'a http_0_2::HeaderMap,
+        &'a http::HeaderMap,
     )
 {
     fn get_session(self) -> BoxFuture<'a, Option<Session>> {
@@ -189,7 +189,7 @@ impl<'a, DB: Executor<Database = Postgres> + Send> SessionGetExt<'a>
             (db, redis, headers): (
                 &mut impl Executor<Database = Postgres>,
                 &mut redis::aio::Connection,
-                &http_0_2::HeaderMap,
+                &http::HeaderMap,
             ),
         ) -> Result<Option<Session>> {
             let cookie_header = headers

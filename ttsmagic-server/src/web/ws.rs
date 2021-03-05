@@ -222,7 +222,7 @@ async fn handle_incoming_message(
 }
 
 struct ServerCallback {
-    headers: Option<http_0_2::HeaderMap>,
+    headers: Option<http::HeaderMap>,
 }
 
 impl ServerCallback {
@@ -260,9 +260,9 @@ impl ServerCallback {
 impl<'a> tungstenite::handshake::server::Callback for &'a mut ServerCallback {
     fn on_request(
         self,
-        request: &http_0_2::Request<()>,
-        response: http_0_2::Response<()>,
-    ) -> std::result::Result<http_0_2::Response<()>, http_0_2::Response<Option<String>>> {
+        request: &http::Request<()>,
+        response: http::Response<()>,
+    ) -> std::result::Result<http::Response<()>, http::Response<Option<String>>> {
         self.headers = Some(request.headers().clone());
         Ok(response)
     }

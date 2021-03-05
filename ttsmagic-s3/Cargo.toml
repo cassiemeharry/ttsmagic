@@ -14,7 +14,7 @@ url = "2"
 
 [dependencies.rusoto_signature]
 default-features = false
-version = "0.45"
+version = "0.46"
 
 [dev-dependencies]
 pretty_assertions = "0.6"

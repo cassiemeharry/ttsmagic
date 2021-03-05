@@ -221,7 +221,8 @@ impl WritableMediaFile {
 
             random_chars.clear();
             for _ in 0..RANDOM_LEN {
-                let c = rand::thread_rng().gen_range('a' as u8, ('z' as u8) + 1) as char;
+                let range = ('a' as u8)..=('z' as u8);
+                let c = rand::thread_rng().gen_range(range) as char;
                 random_chars.push(c);
             }
             key = format!("{}_{}.{}", prefix, random_chars, ext);

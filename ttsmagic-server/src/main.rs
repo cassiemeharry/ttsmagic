@@ -8,7 +8,7 @@ extern crate log;
 extern crate pin_utils;
 
 use anyhow::{Context, Result};
-use pretty_env_logger;
+use pretty_env_logger::env_logger::Logger;
 use std::str::FromStr;
 
 mod deck;
@@ -24,7 +24,7 @@ mod user;
 mod utils;
 mod web;
 
-fn setup_logging() -> env_logger::Logger {
+fn setup_logging() -> Logger {
     let mut builder = pretty_env_logger::formatted_timed_builder();
     if let Ok(s) = std::env::var("RUST_LOG") {
         builder.parse_filters(&s);
@@ -35,7 +35,7 @@ fn setup_logging() -> env_logger::Logger {
     logger
 }
 
-fn setup_sentry(logger: env_logger::Logger, dsn: Option<&str>) -> Option<sentry::ClientInitGuard> {
+fn setup_sentry(logger: Logger, dsn: Option<&str>) -> Option<sentry::ClientInitGuard> {
     let opts: sentry::ClientOptions = match dsn {
         None => {
             log::set_boxed_logger(Box::new(logger)).unwrap();
@@ -44,9 +44,10 @@ fn setup_sentry(logger: env_logger::Logger, dsn: Option<&str>) -> Option<sentry:
         }
         Some(dsn) => dsn.into(),
     };
-    let log_integration =
-        sentry::integrations::log::LogIntegration::default().with_env_logger_dest(Some(logger));
-    let opts = opts.add_integration(log_integration);
+    let sentry_logger = sentry::integrations::log::SentryLogger::with_dest(logger);
+    log::set_boxed_logger(Box::new(sentry_logger)).ok()?;
+    log::set_max_level(log::LevelFilter::Info);
+
     Some(sentry::init(opts))
 }
 
