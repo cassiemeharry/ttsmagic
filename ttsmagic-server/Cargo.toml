@@ -104,5 +104,5 @@ features = ["serde", "v4"]
 version = "0.8"
 
 [dev-dependencies]
-itertools = "0.9"
+itertools = "0.10"
 pretty_assertions = "*"
