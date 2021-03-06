@@ -26,7 +26,7 @@ http_0_2 = { version = "0.2", package = "http" }
 humantime = "1"
 lazy_static = "1"
 log = "0.4"
-nonempty = "0.3"
+nonempty = "0.6"
 pbr = "1"
 percent-encoding = "1"
 pin-utils = "0.1"
