@@ -89,7 +89,7 @@ version = "1"
 [dependencies.sqlx]
 default-features = false
 features = ["chrono", "postgres", "runtime-async-std", "uuid"]
-version = "0.2"
+version = "0.5"
 
 [dependencies.async-tungstenite]
 features = ["async-std-runtime"]
