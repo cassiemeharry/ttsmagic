@@ -80,7 +80,7 @@ version = "0.19"
 
 [dependencies.sentry-log]
 features = ["env_logger"]
-version = "0.19"
+version = "0.20"
 
 [dependencies.serde]
 features = ["derive"]
