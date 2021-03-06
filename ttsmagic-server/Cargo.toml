@@ -93,7 +93,7 @@ version = "0.2"
 
 [dependencies.async-tungstenite]
 features = ["async-std-runtime"]
-version = "0.8"
+version = "0.13"
 
 [dependencies.url]
 features = ["serde"]
