@@ -4,7 +4,10 @@ use chrono::prelude::*;
 use image::RgbImage;
 use nonempty::NonEmpty;
 use serde_json::Value;
-use sqlx::{postgres::PgRow, Executor, Postgres, Row};
+use sqlx::{
+    postgres::{PgArguments, PgRow},
+    Executor, PgConnection, Postgres, Row,
+};
 use std::{
     collections::{HashMap, HashSet},
     convert::TryFrom,
@@ -94,11 +97,12 @@ pub struct ScryfallCardRow {
     pub updated_at: DateTime<Utc>,
 }
 
-impl sqlx::FromRow<PgRow> for ScryfallCardRow {
-    fn from_row(row: PgRow) -> Self {
+impl sqlx::FromRow<'_, PgRow> for ScryfallCardRow {
+    fn from_row(row: &PgRow) -> Result<Self, sqlx::Error> {
         let updated_at: DateTime<Utc> = row.get("updated_at");
         let json: String = row.get("json");
-        ScryfallCardRow { json, updated_at }
+        let row = ScryfallCardRow { json, updated_at };
+        Ok(row)
     }
 }
 
@@ -121,7 +125,7 @@ impl TryFrom<ScryfallCardRow> for ScryfallCard {
 
 impl ScryfallCard {
     pub async fn save_from_json(
-        db: &mut impl Executor<Database = Postgres>,
+        db: impl sqlx::Executor<'_, Database = Postgres>,
         json: Value,
     ) -> Result<Self> {
         let row = sqlx::query(
@@ -254,10 +258,13 @@ RETURNING updated_at
     }
 }
 
-pub async fn card_by_id(
-    db: &mut impl Executor<Database = Postgres>,
+pub async fn card_by_id<'db, 'a: 'db, DB: 'db>(
+    db: &'a mut DB,
     id: ScryfallId,
-) -> Result<ScryfallCard> {
+) -> Result<ScryfallCard>
+where
+    &'a mut DB: Executor<'db, Database = Postgres>,
+{
     debug!("Checking database for card with Scryfall ID {}", id);
     let row_opt: Option<ScryfallCardRow> = sqlx::query_as(
         "\
@@ -281,10 +288,13 @@ WHERE
     }
 }
 
-pub async fn oracle_id_by_name(
-    db: &mut impl Executor<Database = Postgres>,
+pub async fn oracle_id_by_name<'db, 'a: 'db, DB>(
+    db: &'a mut DB,
     name: &str,
-) -> Result<ScryfallOracleId> {
+) -> Result<ScryfallOracleId>
+where
+    &'a mut DB: Executor<'db, Database = Postgres>,
+{
     debug!("Checking database for card with name \"{}\"", name);
     let row = sqlx::query(
         "\
@@ -310,7 +320,7 @@ LIMIT 1
 
 pub async fn load_bulk<P: AsRef<Path>>(
     api: &ScryfallApi,
-    db: &mut impl Executor<Database = Postgres>,
+    db: &mut PgConnection,
     root: P,
     force: bool,
 ) -> Result<()> {
@@ -465,7 +475,7 @@ pub async fn load_bulk<P: AsRef<Path>>(
 
     let start = std::time::Instant::now();
     let estimated_count = sqlx::query("SELECT COUNT(*) as total FROM scryfall_card;")
-        .fetch_one(db)
+        .fetch_one(&mut *db)
         .await?
         .get::<i64, _>("total")
         .max(50_000) as u64;
@@ -474,7 +484,7 @@ pub async fn load_bulk<P: AsRef<Path>>(
     info!("Saving cards from Scryfall into database...");
     for card_result in pbr::PbIter::new(cards_iter) {
         let card = card_result.context("Failed to load cards from Scryfall bulk data")?;
-        ScryfallCard::save_from_json(db, card).await?;
+        ScryfallCard::save_from_json(&mut *db, card).await?;
     }
     let end = std::time::Instant::now();
     let std_delta = end - start;
@@ -488,7 +498,7 @@ pub async fn load_bulk<P: AsRef<Path>>(
 // Expand a single oracle ID into multiple printed cards. We prefer full faced
 // cards when available.
 pub async fn expand_oracle_id(
-    db: &mut impl Executor<Database = Postgres>,
+    db: &mut PgConnection,
     oracle_id: ScryfallOracleId,
     oracle_count: u8,
 ) -> Result<Vec<(ScryfallId, ScryfallCard, u8)>> {
@@ -504,7 +514,7 @@ ORDER BY
 ;",
     )
     .bind(oracle_id.as_uuid())
-    .fetch(db);
+    .fetch(&mut *db);
     let mut rows: Vec<ScryfallCardRow> = vec![];
     while let Some(row_result) = rows_stream.next().await {
         let row = row_result?;
@@ -570,7 +580,7 @@ ORDER BY
 }
 
 pub async fn check_legality_by_oracle_id(
-    db: &mut impl Executor<Database = Postgres>,
+    db: impl Executor<'_, Database = Postgres>,
     oracle_id: ScryfallOracleId,
     format: &str,
 ) -> Result<bool> {
@@ -605,40 +615,43 @@ impl<'a> TextArray<'a> {
         }
     }
 
-    fn add_bindings<Q: BindableQuery>(self, mut query: Q) -> Q {
+    fn add_bindings<'db>(
+        self,
+        mut query: sqlx::query::Query<'db, Postgres, PgArguments>,
+    ) -> sqlx::query::Query<'db, Postgres, PgArguments> {
         for s in self.strings {
-            query = query.bind_value::<String>(s.to_string());
+            query = query.bind::<String>(s.to_string());
         }
         query
     }
 }
 
-trait BindableQuery<DB = Postgres>: Sized {
-    fn bind_value<T>(self, value: T) -> Self
-    where
-        DB: sqlx::types::HasSqlType<T>,
-        T: sqlx::encode::Encode<DB>;
-}
+// trait BindableQuery<DB = Postgres>: Sized {
+//     fn bind_value<T>(self, value: T) -> Self
+//     where
+//         DB: sqlx::types::HasSqlType<T>,
+//         T: sqlx::encode::Encode<DB>;
+// }
 
-impl<'q, DB: sqlx::Database> BindableQuery<DB> for sqlx::Query<'q, DB> {
-    fn bind_value<T>(self, value: T) -> Self
-    where
-        DB: sqlx::types::HasSqlType<T>,
-        T: sqlx::encode::Encode<DB>,
-    {
-        self.bind(value)
-    }
-}
+// impl<'q, DB: sqlx::Database> BindableQuery<DB> for sqlx::query::Query<'q, DB> {
+//     fn bind_value<T>(self, value: T) -> Self
+//     where
+//         DB: sqlx::types::HasSqlType<T>,
+//         T: sqlx::encode::Encode<DB>,
+//     {
+//         self.bind(value)
+//     }
+// }
 
-impl<'q, DB: sqlx::Database, R> BindableQuery<DB> for sqlx::QueryAs<'q, DB, R> {
-    fn bind_value<T>(self, value: T) -> Self
-    where
-        DB: sqlx::types::HasSqlType<T>,
-        T: sqlx::encode::Encode<DB>,
-    {
-        self.bind(value)
-    }
-}
+// impl<'q, DB: sqlx::Database, R> BindableQuery<DB> for sqlx::query::QueryAs<'q, DB, R> {
+//     fn bind_value<T>(self, value: T) -> Self
+//     where
+//         DB: sqlx::types::HasSqlType<T>,
+//         T: sqlx::encode::Encode<DB>,
+//     {
+//         self.bind(value)
+//     }
+// }
 
 impl<'a> fmt::Display for TextArray<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -655,7 +668,7 @@ impl<'a> fmt::Display for TextArray<'a> {
 }
 
 pub async fn deck_color_identity(
-    db: &mut impl Executor<Database = Postgres>,
+    db: impl Executor<'_, Database = Postgres>,
     oracle_ids: &[ScryfallOracleId],
 ) -> Result<HashSet<String>> {
     let oracle_id_strings = oracle_ids
@@ -687,7 +700,7 @@ WHERE ((json ->> 'oracle_id')::uuid) = ANY ({})
 }
 
 pub async fn can_be_a_commander(
-    db: &mut impl Executor<Database = Postgres>,
+    db: impl Executor<'_, Database = Postgres>,
     oracle_id: ScryfallOracleId,
     deck_color_identity: &[&str],
 ) -> Result<bool> {

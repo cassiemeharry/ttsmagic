@@ -60,11 +60,12 @@ pub async fn demo_login(req: Request<AppState>) -> Result {
     use tide::{http::headers::HeaderName, Redirect};
 
     let state = req.state().clone();
-    let mut db = &state.db_pool;
-    let demo_user = crate::user::User::get_or_create_demo_user(&mut db)
+    let mut db_conn = state.db_pool.acquire().await?;
+    let db_conn_1: &'_ mut sqlx::PgConnection = &mut *db_conn;
+    let demo_user = crate::user::User::get_or_create_demo_user(db_conn_1)
         .await
         .tide_compat()?;
-    let session = crate::web::session::Session::new(&mut db, demo_user.id)
+    let session = crate::web::session::Session::new(&mut *db_conn, demo_user.id)
         .await
         .tide_compat()?;
     let mut resp: Response = Redirect::new("/").into();

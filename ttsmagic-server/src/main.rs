@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
     let mut _sentry_guard = setup_sentry(logger, args.value_of("sentry_dsn"));
 
     let scryfall_api = std::sync::Arc::new(scryfall::api::ScryfallApi::new());
-    let mut db_pool = sqlx::PgPool::new(&format!(
+    let db_pool = sqlx::PgPool::connect(&format!(
         "postgresql://{}:{}@{}:{}/{}",
         args.value_of("db_user").expect("DB_USER is missing"),
         args.value_of("db_pass").expect("DB_PASSWORD is missing"),
@@ -132,10 +132,13 @@ async fn main() -> Result<()> {
         }
         ("load-deck", Some(load_deck_opts)) => {
             // TODO: get the user from args
-            let user = user::User::get_or_create_demo_user(&mut db_pool).await?;
+            let mut tx = db_pool.begin().await?;
+            let user = user::User::get_or_create_demo_user(&mut tx).await?;
             let url_str = load_deck_opts.value_of("url").unwrap();
             let url = url::Url::parse(&url_str)?;
-            let deck = deck::load_deck(&mut db_pool, &mut redis_conn, &user, url).await?;
+            let deck;
+            deck = deck::load_deck(&mut tx, &mut redis_conn, &user, url).await?;
+            tx.commit().await?;
             println!("Loaded deck: {:#?}", deck);
         }
         ("render-deck", Some(render_deck_opts)) => {
@@ -148,10 +151,10 @@ async fn main() -> Result<()> {
                 Some(raw) => Some(ttsmagic_types::UserId::from_str(raw)?),
                 None => None,
             };
-            importer::import_all(scryfall_api, &mut db_pool, &mut redis_conn, user_id).await?;
+            importer::import_all(scryfall_api, &db_pool, &mut redis_conn, user_id).await?;
         }
         ("cleanup", _) => {
-            importer::cleanup(&mut db_pool).await?;
+            importer::cleanup(&db_pool).await?;
         }
         ("upload-files", Some(opts)) => {
             let delete_after_upload = opts.is_present("delete_after_upload");
@@ -163,7 +166,7 @@ async fn main() -> Result<()> {
             scryfall::load_bulk(&scryfall_api, &mut conn, &root, force).await?;
         }
         ("migrate", Some(_migration_options)) => {
-            migrations::apply_all(&mut db_pool).await?;
+            migrations::apply_all(&db_pool).await?;
         }
         ("", None) => println!("Missing subcommand"),
         _ => unreachable!(),
@@ -174,11 +177,12 @@ async fn main() -> Result<()> {
 
 async fn render_deck_command(
     scryfall_api: std::sync::Arc<scryfall::api::ScryfallApi>,
-    mut db_pool: sqlx::PgPool,
+    db_pool: sqlx::PgPool,
     redis: &mut redis::aio::Connection,
     opts: &clap::ArgMatches<'_>,
 ) -> Result<()> {
-    let user = user::User::get_or_create_demo_user(&mut db_pool)
+    let mut db = db_pool.acquire().await?;
+    let user = user::User::get_or_create_demo_user(&mut db)
         .await
         .context("Failed to get the demo user")?;
     let url_str = opts.value_of("url").unwrap();

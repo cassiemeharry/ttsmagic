@@ -17,7 +17,7 @@ use futures::{
     sink::{Sink, SinkExt as _},
 };
 use redis::AsyncCommands;
-use sqlx::{Executor, Postgres};
+use sqlx::Postgres;
 use ttsmagic_types::{frontend_to_server as f2s, server_to_frontend as s2f};
 
 use crate::{
@@ -185,24 +185,24 @@ async fn handle_connection(
 async fn handle_incoming_message(
     user: User,
     api: Arc<ScryfallApi>,
-    mut db_conn: impl Executor<Database = Postgres> + Send + 'static,
+    mut db: sqlx::pool::PoolConnection<Postgres>,
     mut redis_conn: impl AsyncCommands + 'static,
     mut handle_sink: mpsc::Sender<s2f::ServerToFrontendMessage>,
     msg: f2s::FrontendToServerMessage,
 ) -> Result<()> {
     match msg {
         f2s::FrontendToServerMessage::DeleteDeck { id } => {
-            let deck: Deck = Deck::get_by_id(&mut db_conn, id)
+            let deck: Deck = Deck::get_by_id(&mut *db, id)
                 .await?
                 .ok_or_else(|| anyhow!("Invalid deck ID"))?;
             ensure!(
                 deck.user_id == user.id,
                 "Invalid deck ID (that doesn't belong to you)"
             );
-            deck.delete(&mut db_conn, &mut redis_conn).await?;
+            deck.delete(&mut *db, &mut redis_conn).await?;
         }
         f2s::FrontendToServerMessage::GetDecks => {
-            let decks = get_decks_for_user(&mut db_conn, user.id).await?;
+            let decks = get_decks_for_user(&mut *db, user.id).await?;
             let msg = s2f::ServerToFrontendMessage::DeckList { decks };
             handle_sink.send(msg).await?;
         }
@@ -210,8 +210,8 @@ async fn handle_incoming_message(
             spawn_blocking::<_, Result<()>>(move || {
                 block_on(async move {
                     let mut deck =
-                        crate::deck::load_deck(&mut db_conn, &mut redis_conn, &user, url).await?;
-                    deck.render(api, &mut db_conn, &mut redis_conn).await?;
+                        crate::deck::load_deck(&mut *db, &mut redis_conn, &user, url).await?;
+                    deck.render(api, &mut *db, &mut redis_conn).await?;
                     Ok(())
                 })
             })

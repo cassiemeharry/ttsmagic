@@ -8,6 +8,12 @@ edition = "2018"
 features = ["derive"]
 version = "1"
 
+[dependencies.sqlx]
+default-features = false
+features = ["macros", "postgres"]
+optional = true
+version = "0.5"
+
 [dependencies.url]
 features = ["serde"]
 version = "2"

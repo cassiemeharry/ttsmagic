@@ -1,5 +1,5 @@
 use anyhow::Result;
-use sqlx::{Executor, Postgres};
+use sqlx::PgConnection;
 use std::time::{Duration, Instant};
 
 macro_rules! migration {
@@ -17,13 +17,13 @@ static MIGRATIONS: &[(&'static str, &'static str)] = &[
 ];
 
 async fn apply_migration(
-    db: &mut impl Executor<Database = Postgres>,
+    db: &mut PgConnection,
     label: &str,
     sql: &str,
 ) -> Result<Option<Duration>> {
     let row_opt = sqlx::query("SELECT 1 FROM migrations WHERE label = $1")
         .bind(label)
-        .fetch_optional(db)
+        .fetch_optional(&mut *db)
         .await?;
     match row_opt {
         Some(_) => Ok(None),
@@ -32,12 +32,12 @@ async fn apply_migration(
             let start = Instant::now();
             for statement in sql.split("\n\n") {
                 debug!("Running SQL: {}", statement);
-                sqlx::query(statement).execute(db).await?;
+                sqlx::query(statement).execute(&mut *db).await?;
             }
             debug!("Marking migration as complete...");
             sqlx::query("INSERT INTO migrations ( label ) VALUES ( $1 );")
                 .bind(label)
-                .execute(db)
+                .execute(&mut *db)
                 .await?;
             let end = Instant::now();
             Ok(Some(end.duration_since(start)))
@@ -45,7 +45,7 @@ async fn apply_migration(
     }
 }
 
-pub async fn apply_all(db: &mut sqlx::PgPool) -> Result<()> {
+pub async fn apply_all(db: &sqlx::PgPool) -> Result<()> {
     info!("Running migrations...");
     sqlx::query(
         "\

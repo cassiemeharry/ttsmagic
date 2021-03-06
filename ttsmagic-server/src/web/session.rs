@@ -2,7 +2,7 @@ use anyhow::{anyhow, ensure, Context, Result};
 use futures::future::BoxFuture;
 use redis::AsyncCommands;
 use ring::hmac;
-use sqlx::{Executor, Postgres};
+use sqlx::{PgConnection, Postgres};
 use std::str::FromStr;
 use tide::{
     http::{headers::COOKIE, Cookie},
@@ -27,13 +27,13 @@ pub const SESSION_EXPIRE_SECONDS: usize = 3 * 24 * 60 * 60;
 pub const SESSION_COOKIE_NAME: &'static str = "ttsmagic-session";
 
 impl Session {
-    pub async fn new(db: &mut impl Executor<Database = Postgres>, user_id: UserId) -> Result<Self> {
+    pub async fn new(db: &mut PgConnection, user_id: UserId) -> Result<Self> {
         let new_session_id = Uuid::new_v4();
         Self::from_user_id(db, new_session_id, user_id).await
     }
 
     async fn from_user_id(
-        db: &mut impl Executor<Database = Postgres>,
+        db: &mut PgConnection,
         session_id: Uuid,
         user_id: UserId,
     ) -> Result<Self> {
@@ -91,7 +91,7 @@ impl Session {
     }
 
     async fn load_from_cache(
-        db: &mut impl Executor<Database = Postgres>,
+        db: &mut PgConnection,
         redis: &mut redis::aio::Connection,
         signed_cookie_value: &str,
     ) -> Result<Option<Self>> {
@@ -177,9 +177,9 @@ pub trait SessionClearExt<'a>: Sized {
     fn clear_session(self) -> BoxFuture<'a, Result<Self>>;
 }
 
-impl<'a, DB: Executor<Database = Postgres> + Send> SessionGetExt<'a>
+impl<'a> SessionGetExt<'a>
     for (
-        &'a mut DB,
+        &'a mut PgConnection,
         &'a mut redis::aio::Connection,
         &'a http::HeaderMap,
     )
@@ -187,7 +187,7 @@ impl<'a, DB: Executor<Database = Postgres> + Send> SessionGetExt<'a>
     fn get_session(self) -> BoxFuture<'a, Option<Session>> {
         async fn inner(
             (db, redis, headers): (
-                &mut impl Executor<Database = Postgres>,
+                &mut PgConnection,
                 &mut redis::aio::Connection,
                 &http::HeaderMap,
             ),
@@ -199,7 +199,7 @@ impl<'a, DB: Executor<Database = Postgres> + Send> SessionGetExt<'a>
             let cookie_str = cookie_header
                 .to_str()
                 .context("Failed to get session information from http::Request")?;
-            let s_opt = from_cookie_header(db, redis, cookie_str).await?;
+            let s_opt = from_cookie_header(&mut *db, redis, cookie_str).await?;
             Ok(s_opt)
         }
         Box::pin(async move {
@@ -211,6 +211,20 @@ impl<'a, DB: Executor<Database = Postgres> + Send> SessionGetExt<'a>
                 }
             }
         })
+    }
+}
+
+impl<'a> SessionGetExt<'a>
+    for (
+        &'a mut sqlx::pool::PoolConnection<Postgres>,
+        &'a mut redis::aio::Connection,
+        &'a http::HeaderMap,
+    )
+{
+    fn get_session(self) -> BoxFuture<'a, Option<Session>> {
+        let (pool_conn, redis, headers) = self;
+        let db_conn: &mut PgConnection = &mut *pool_conn;
+        (db_conn, redis, headers).get_session()
     }
 }
 
@@ -248,7 +262,7 @@ impl<'a> SessionClearExt<'a> for &'a mut Response {
 }
 
 pub async fn from_cookie_header(
-    db: &mut impl Executor<Database = Postgres>,
+    db: &mut PgConnection,
     redis: &mut redis::aio::Connection,
     header_value: &str,
 ) -> Result<Option<Session>> {
@@ -302,14 +316,14 @@ impl SessionMiddleware {
             let redis_client = &state.redis;
             let mut redis_conn = redis_client.get_async_connection().await?;
             let db_pool = &state.db_pool;
-            let mut db = db_pool.acquire().await?;
+            let mut db_conn = db_pool.acquire().await?;
             let cookie_header_values = req
                 .header(&COOKIE)
                 .cloned()
                 .unwrap_or_else(|| vec![].into_iter().collect());
             let mut cookie_session = None;
             for hv in cookie_header_values.iter() {
-                match from_cookie_header(&mut db, &mut redis_conn, hv.as_str()).await {
+                match from_cookie_header(&mut *db_conn, &mut redis_conn, hv.as_str()).await {
                     Ok(s) => cookie_session = s,
                     Err(e) => error!("Failed to parse cookie header {:?}: {:?}", hv.as_str(), e),
                 }

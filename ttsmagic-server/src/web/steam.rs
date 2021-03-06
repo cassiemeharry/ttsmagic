@@ -161,7 +161,7 @@ pub async fn handle_redirect(request: Request<AppState>) -> tide::Result {
     debug!("Got Steam OpenID response: {:#?}", openid_response);
     let steam_id = openid_response.validate(&request).tide_compat()?;
     let state = request.state();
-    let mut db = &state.db_pool;
+    let mut db = state.db_pool.acquire().await?;
     let mut redis_conn = state
         .redis
         .get_async_connection()

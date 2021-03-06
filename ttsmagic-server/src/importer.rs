@@ -1,13 +1,13 @@
 use anyhow::{anyhow, Context, Result};
 use async_std::{prelude::*, sync::Arc};
-use sqlx::{Executor, PgPool, Postgres, Row};
+use sqlx::{Acquire as _, Executor, PgConnection, PgPool, Postgres, Row};
 use ttsmagic_types::{DeckId, UserId};
 use url::Url;
 use uuid::Uuid;
 
 use crate::{scryfall::api::ScryfallApi, user::User};
 
-async fn import_users(db: &mut impl Executor<Database = Postgres>) -> Result<()> {
+async fn import_users(db: impl Executor<'_, Database = Postgres>) -> Result<()> {
     sqlx::query("\
 INSERT INTO ttsmagic_user ( steam_id, display_name, last_login )
 SELECT ((social_auth_usersocialauth.extra_data::jsonb) -> 'player' ->> 'steamid')::bigint as steam_id
@@ -26,10 +26,12 @@ ON CONFLICT (steam_id) DO NOTHING
 
 async fn import_decks(
     scryfall_api: Arc<ScryfallApi>,
-    db: &mut PgPool,
+    db: &PgPool,
     redis: &mut impl redis::AsyncCommands,
     only_user: Option<UserId>,
 ) -> Result<()> {
+    let mut db_conn = db.acquire().await?;
+
     sqlx::query(
         "\
 INSERT INTO deck ( id, user_id, title, url )
@@ -51,7 +53,7 @@ AND social_auth_usersocialauth.provider = 'steam'
 ON CONFLICT DO NOTHING
 ;",
     )
-    .execute(db)
+    .execute(&mut *db_conn)
     .await?;
 
     let mut decks_to_load;
@@ -78,7 +80,7 @@ ORDER BY
 , deck_deck.source_url
 ;",
         )
-        .fetch(db);
+        .fetch(&mut *db_conn);
         decks_to_load = Vec::new();
         while let Some(row_result) = decks_to_load_stream.next().await {
             let row = row_result?;
@@ -96,7 +98,7 @@ ORDER BY
                 continue;
             }
         }
-        let mut load_tx = db.begin().await?;
+        let mut load_tx = db_conn.begin().await?;
         let user: User = User::get_by_id(&mut load_tx, user_id)
             .await?
             .ok_or_else(|| anyhow!("Failed to get user with ID {}", user_id))?;
@@ -119,7 +121,7 @@ ORDER BY
             "SELECT COUNT(*) AS row_count FROM deck_entry WHERE deck_entry.deck_id = $1;",
         )
         .bind(deck.id.as_uuid())
-        .fetch_one(db)
+        .fetch_one(&mut *db_conn)
         .await?;
         let count: i64 = count_row.get("row_count");
         assert!(count > 0);
@@ -130,7 +132,7 @@ ORDER BY
 
 pub async fn import_all(
     scryfall_api: Arc<ScryfallApi>,
-    db: &mut PgPool,
+    db: &PgPool,
     redis: &mut impl redis::AsyncCommands,
     only_user: Option<UserId>,
 ) -> Result<()> {
@@ -148,7 +150,7 @@ pub async fn import_all(
 }
 
 async fn cleanup_deck(
-    db: &mut PgPool,
+    db: &mut PgConnection,
     deck_id: DeckId,
     user_id: UserId,
     title: String,
@@ -158,7 +160,7 @@ async fn cleanup_deck(
         "Cleaning up deck {} \"{}\" (user {}, URL {})",
         deck_id, title, user_id, url
     );
-    let loader = match crate::deck::find_loader::<PgPool, redis::aio::Connection>(url.clone()) {
+    let loader = match crate::deck::find_loader::<redis::aio::Connection>(url.clone()) {
         Some(l) => l,
         None => {
             warn!(
@@ -183,14 +185,14 @@ async fn cleanup_deck(
         let exists_opt = sqlx::query("SELECT 1 FROM deck WHERE user_id = $1 AND url = $2;")
             .bind(user_id.as_queryable())
             .bind(format!("{}", canon_url))
-            .fetch_optional(db)
+            .fetch_optional(&mut *db)
             .await?;
         match exists_opt {
             Some(_) => {
                 info!("There's already a deck for this user with the correct URL, so deleting the incorrect one.");
                 sqlx::query("DELETE FROM deck WHERE id = $1;")
                     .bind(deck_id.as_uuid())
-                    .execute(db)
+                    .execute(&mut *db)
                     .await?
             }
             None => {
@@ -198,7 +200,7 @@ async fn cleanup_deck(
                 sqlx::query("UPDATE deck SET url = $1 WHERE id = $2;")
                     .bind(format!("{}", canon_url))
                     .bind(deck_id.as_uuid())
-                    .execute(db)
+                    .execute(&mut *db)
                     .await?
             }
         };
@@ -206,7 +208,9 @@ async fn cleanup_deck(
     Ok(())
 }
 
-pub async fn cleanup(db: &mut PgPool) -> Result<()> {
+pub async fn cleanup(db: &PgPool) -> Result<()> {
+    let mut db_conn = db.acquire().await?;
+
     let decks_to_check;
     {
         let mut stream = sqlx::query(
@@ -215,7 +219,7 @@ SELECT id, user_id, title, url FROM deck
 ORDER BY user_id ASC, url ASC
 ;",
         )
-        .fetch(db);
+        .fetch(&mut *db_conn);
         let mut to_check = Vec::new();
         while let Some(row_result) = stream.next().await {
             let row = row_result.context("Failed to get list of decks to cleanup")?;
@@ -237,7 +241,7 @@ ORDER BY user_id ASC, url ASC
         decks_to_check = to_check;
     }
     for (deck_id, user_id, title, url) in decks_to_check {
-        cleanup_deck(db, deck_id, user_id, title, url)
+        cleanup_deck(&mut *db_conn, deck_id, user_id, title, url)
             .await
             .with_context(|| format!("Failed to clean up deck {}", deck_id))?;
     }

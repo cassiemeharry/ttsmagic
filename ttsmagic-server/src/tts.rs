@@ -6,7 +6,7 @@ use image::{imageops, RgbImage};
 use redis::AsyncCommands;
 use serde_json::{json, Value};
 use smallvec::SmallVec;
-use sqlx::{Executor, Postgres};
+use sqlx::PgConnection;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     convert::{TryFrom, TryInto},
@@ -127,10 +127,10 @@ fn get_parts(card: ScryfallCard) -> Box<dyn Iterator<Item = ScryfallId> + Send> 
     Box::new(iter)
 }
 
-async fn get_tokens(
-    db: &mut impl Executor<Database = Postgres>,
-    cards: impl Iterator<Item = ScryfallCard>,
-) -> Result<Vec<ScryfallCard>> {
+async fn get_tokens<I>(db: &mut PgConnection, cards: I) -> Result<Vec<ScryfallCard>>
+where
+    I: Iterator<Item = ScryfallCard>,
+{
     let (size_hint, _) = cards.size_hint();
     let mut work_queue = VecDeque::with_capacity(size_hint);
     for card in cards {
@@ -151,9 +151,11 @@ async fn get_tokens(
                 debug!("Already seen part {}", part_id);
                 continue;
             }
-            let part_card = scryfall::card_by_id(db, part_id).await.with_context(|| {
-                format!("Failed to get related card {} for {}", part_id, card_name)
-            })?;
+            let part_card = scryfall::card_by_id(&mut *db, part_id)
+                .await
+                .with_context(|| {
+                    format!("Failed to get related card {} for {}", part_id, card_name)
+                })?;
             let part_oracle_id = part_card.oracle_id()?;
             work_queue.push_back(part_card.clone());
             parts.entry(part_oracle_id).or_insert(part_card);
@@ -234,10 +236,7 @@ impl TryFrom<(Pile, &'_ [RenderedPage])> for LinearPile {
 
 type Piles = SmallVec<[Pile; 4]>;
 
-async fn collect_card_piles(
-    db: &mut impl Executor<Database = Postgres>,
-    deck: &Deck,
-) -> Result<Piles> {
+async fn collect_card_piles(db: &mut PgConnection, deck: &Deck) -> Result<Piles> {
     let deck_url = deck.url.clone();
 
     let commanders_pile = {
@@ -699,10 +698,10 @@ fn render_piles_to_json<'a>(
     }))
 }
 
-pub async fn render_deck<R: AsyncCommands>(
+pub async fn render_deck(
     api: Arc<ScryfallApi>,
-    db: &mut impl Executor<Database = Postgres>,
-    redis: &mut R,
+    db: &mut PgConnection,
+    redis: &mut impl AsyncCommands,
     deck: &Deck,
 ) -> Result<RenderedDeck> {
     let _guard = wait_for_lock(redis, deck).await?;

@@ -49,13 +49,9 @@ pub type AppState = Arc<AppStateInner>;
 
 #[derive(Debug)]
 pub struct AppStateInner {
-    #[allow(unused)]
     scryfall_api: Arc<ScryfallApi>,
-    #[allow(unused)]
     db_pool: sqlx::PgPool,
-    #[allow(unused)]
     redis: redis::Client,
-    #[allow(unused)]
     root: PathBuf,
 }
 

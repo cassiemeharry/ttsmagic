@@ -1,18 +1,20 @@
 use anyhow::{anyhow, Context, Error, Result};
 use chrono::prelude::*;
 use serde::Deserialize;
-use sqlx::{postgres::PgRow, Executor, Postgres, Row};
+use sqlx::PgConnection;
 use std::fmt;
 use ttsmagic_types::UserId;
 use url::Url;
 
 use crate::web::SurfErrorCompat as _;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, sqlx::FromRow)]
 pub struct User {
+    #[sqlx(rename = "steam_id")]
     pub id: UserId,
     pub display_name: String,
     pub last_login: DateTime<Utc>,
+    #[sqlx(default)]
     _other: (),
 }
 
@@ -87,21 +89,16 @@ impl User {
         Ok(player_info.personaname.clone())
     }
 
-    pub async fn steam_login(db: &mut impl Executor<Database = Postgres>, id: u64) -> Result<Self> {
+    pub async fn steam_login(db: &mut PgConnection, id: u64) -> Result<Self> {
         let display_name = Self::get_user_name_from_steam(id).await?;
         Self::get_or_create_user(db, id, display_name).await
     }
 
-    pub async fn get_or_create_demo_user(
-        db: &mut impl Executor<Database = Postgres>,
-    ) -> Result<Self> {
+    pub async fn get_or_create_demo_user(db: &mut PgConnection) -> Result<Self> {
         Self::get_or_create_user(db, DEMO_USER_ID.0, "Demo User".to_string()).await
     }
 
-    pub async fn get_by_id(
-        db: &mut impl Executor<Database = Postgres>,
-        user_id: UserId,
-    ) -> Result<Option<Self>> {
+    pub async fn get_by_id(db: &mut PgConnection, user_id: UserId) -> Result<Option<Self>> {
         let query = sqlx::query_as(
             "SELECT steam_id, display_name, last_login FROM ttsmagic_user WHERE steam_id = $1;",
         )
@@ -112,12 +109,12 @@ impl User {
     }
 
     pub async fn get_or_create_user(
-        db: &mut impl Executor<Database = Postgres>,
+        db: &mut PgConnection,
         steam_id: u64,
         display_name: String,
     ) -> Result<Self> {
         let id = UserId(steam_id);
-        if let Some(user) = Self::get_by_id(db, id).await? {
+        if let Some(user) = Self::get_by_id(&mut *db, id).await? {
             if &user.display_name == &display_name {
                 return Ok(user);
             }
@@ -133,25 +130,26 @@ RETURNING *;",
         .bind(id.as_queryable())
         .bind(display_name)
         .bind(last_login)
-        .fetch_one(db);
+        .fetch_one(&mut *db);
         let user = query.await?;
         Ok(user)
     }
 }
 
-impl sqlx::FromRow<PgRow> for User {
-    fn from_row(row: PgRow) -> User {
-        let steam_id: i64 = row.get("steam_id");
-        let display_name = row.get("display_name");
-        let last_login = row.get("last_login");
-        User {
-            id: UserId::from(steam_id),
-            display_name,
-            last_login,
-            _other: (),
-        }
-    }
-}
+// impl sqlx::FromRow<'_, PgRow> for User {
+//     fn from_row(row: &PgRow) -> Result<User, sqlx::Error> {
+//         let steam_id: i64 = row.try_get("steam_id")?;
+//         let display_name = row.try_get("display_name")?;
+//         let last_login = row.try_get("last_login")?;
+//         let row = User {
+//             id: UserId::from(steam_id),
+//             display_name,
+//             last_login,
+//             _other: (),
+//         };
+//         Ok(row)
+//     }
+// }
 
 impl<'a> Into<sentry::protocol::User> for &'a User {
     fn into(self) -> sentry::protocol::User {

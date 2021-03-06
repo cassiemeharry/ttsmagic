@@ -61,8 +61,10 @@ pub async fn download_deck_json(req: Request<AppState>) -> Result {
         )
     };
     let state = req.state();
-    let mut db = state.db_pool.acquire().await?;
-    let deck_opt = Deck::get_by_id(&mut db, deck_id).await.tide_compat()?;
+    let mut db_conn = state.db_pool.acquire().await?;
+    let deck_opt = Deck::get_by_id(&mut *db_conn, deck_id)
+        .await
+        .tide_compat()?;
     let mut deck = opt_404!(deck_opt);
     ensure_404!(
         deck.user_id == user.id,
@@ -78,7 +80,7 @@ pub async fn download_deck_json(req: Request<AppState>) -> Result {
                 "Failed to create Redis connection: {}",
             );
             let rendered_result = deck
-                .render(state.scryfall_api.clone(), &mut db, &mut redis_conn)
+                .render(state.scryfall_api.clone(), &mut *db_conn, &mut redis_conn)
                 .await;
             let rendered = result_404!(rendered_result, "Failed to render deck {}: {}", deck.id);
             rendered.json_description

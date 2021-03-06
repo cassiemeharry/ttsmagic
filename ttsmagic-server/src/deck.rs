@@ -1,9 +1,9 @@
 use anyhow::{anyhow, ensure, Context, Result};
 use async_std::{prelude::*, sync::Arc};
-use async_trait::async_trait;
+use futures::future::LocalBoxFuture;
 use redis::AsyncCommands;
 use serde_json::Value;
-use sqlx::{Executor, Postgres, Row};
+use sqlx::{Executor, PgConnection, Postgres, Row};
 use std::{collections::HashMap, convert::TryInto, fmt};
 use ttsmagic_types::{server_to_frontend as s2f, DeckColorIdentity, DeckId, UserId};
 use url::Url;
@@ -16,13 +16,13 @@ use crate::{
     },
     tts::RenderedDeck,
     user::User,
-    utils::sqlx::PgArray1D,
+    // utils::sqlx::PgArray1D,
 };
 
 mod loaders;
 
 async fn expand_cards<I>(
-    db: &mut impl Executor<Database = Postgres>,
+    db: &mut PgConnection,
     label: &'static str,
     card_list: I,
 ) -> Result<HashMap<ScryfallId, (ScryfallCard, u8)>>
@@ -40,7 +40,7 @@ where
             oracle_count, card_name, oracle_id
         );
         for (card_id, card, card_count) in
-            scryfall::expand_oracle_id(db, oracle_id, oracle_count).await?
+            scryfall::expand_oracle_id(&mut *db, oracle_id, oracle_count).await?
         {
             debug!(
                 "Expanded {}x {} (from oracle ID: {}) to card {}",
@@ -53,7 +53,7 @@ where
 }
 
 async fn insert_deck_entry(
-    db: &mut impl Executor<Database = Postgres>,
+    db: impl sqlx::Executor<'_, Database = Postgres>,
     deck_id: DeckId,
     card_id: ScryfallId,
     card_count: u8,
@@ -100,7 +100,7 @@ impl fmt::Display for UnparsedDeck {
 
 impl UnparsedDeck {
     async fn save(
-        db: &mut impl Executor<Database = Postgres>,
+        db: &mut PgConnection,
         redis: &mut impl AsyncCommands,
         user: &User,
         url: Url,
@@ -111,7 +111,7 @@ impl UnparsedDeck {
             sqlx::query("SELECT id, title FROM deck WHERE user_id = $1 AND url = $2;")
                 .bind(user.id.as_queryable())
                 .bind(&url_str)
-                .fetch_optional(db)
+                .fetch_optional(&mut *db)
                 .await?;
         let (deck_id, title) = match existing_deck_opt {
             Some(row) => {
@@ -122,7 +122,7 @@ impl UnparsedDeck {
                 sqlx::query("UPDATE deck SET json = $1::jsonb WHERE id = $2;")
                     .bind(None::<&str>)
                     .bind(deck_id)
-                    .execute(db)
+                    .execute(&mut *db)
                     .await?;
                 (DeckId(deck_id), title)
             }
@@ -139,19 +139,19 @@ ON CONFLICT (id) DO UPDATE SET user_id = $2, title = $3, url = $4;",
                 .bind(user.id.as_queryable())
                 .bind(&url_str)
                 .bind(&url_str)
-                .execute(db)
+                .execute(&mut *db)
                 .await?;
                 ensure!(
-                    inserted == 1,
+                    inserted.rows_affected() == 1,
                     "Problem inserting deck row. Expected 1 row modified, saw {} instead",
-                    inserted
+                    inserted.rows_affected()
                 );
                 (deck_id, url_str)
             }
         };
         sqlx::query("DELETE FROM deck_entry WHERE deck_id = $1")
             .bind(deck_id.as_uuid())
-            .execute(db)
+            .execute(&mut *db)
             .await?;
 
         notify_user(
@@ -173,44 +173,49 @@ ON CONFLICT (id) DO UPDATE SET user_id = $2, title = $3, url = $4;",
         })
     }
 
-    pub async fn save_cards(
+    pub async fn save_cards<R>(
         self,
-        db: &mut impl Executor<Database = Postgres>,
-        redis: &mut impl AsyncCommands,
+        db: &mut PgConnection,
+        redis: &mut R,
         title: String,
         commanders: HashMap<ScryfallOracleId, String>,
         main_deck: HashMap<ScryfallOracleId, (String, u8)>,
         sideboard: HashMap<ScryfallOracleId, (String, u8)>,
-    ) -> Result<Deck> {
+    ) -> Result<Deck>
+    where
+        R: AsyncCommands,
+    {
         debug!("Saving cards for deck {:?}", title);
         sqlx::query("UPDATE deck SET title = $1 WHERE id = $2;")
             .bind(&title)
             .bind(self.id.as_uuid())
-            .execute(db)
+            .execute(&mut *db)
             .await?;
         sqlx::query("DELETE FROM deck_entry WHERE deck_id = $1;")
             .bind(self.id.as_uuid())
-            .execute(db)
+            .execute(&mut *db)
             .await?;
         let commanders_len = commanders.len();
         let commanders_iter = commanders.into_iter().map(|(k, name)| (k, (name, 1)));
         let mut commanders = HashMap::with_capacity(commanders_len);
-        for (card_id, (name, count)) in expand_cards(db, "commanders", commanders_iter).await? {
+        for (card_id, (name, count)) in
+            expand_cards(&mut *db, "commanders", commanders_iter).await?
+        {
             assert_eq!(count, 1);
             let prev = commanders.insert(card_id, name);
             assert!(prev.is_none());
         }
-        let main_deck = expand_cards(db, "main deck", main_deck.into_iter()).await?;
-        let sideboard = expand_cards(db, "sideboard", sideboard.into_iter()).await?;
+        let main_deck = expand_cards(&mut *db, "main deck", main_deck.into_iter()).await?;
+        let sideboard = expand_cards(&mut *db, "sideboard", sideboard.into_iter()).await?;
 
         for (card_id, _) in commanders.iter() {
-            insert_deck_entry(db, self.id, *card_id, 1, "commander").await?;
+            insert_deck_entry(&mut *db, self.id, *card_id, 1, "commander").await?;
         }
         for (card_id, (_, card_count)) in main_deck.iter() {
-            insert_deck_entry(db, self.id, *card_id, *card_count, "main_deck").await?;
+            insert_deck_entry(&mut *db, self.id, *card_id, *card_count, "main_deck").await?;
         }
         for (card_id, (_, card_count)) in sideboard.iter() {
-            insert_deck_entry(db, self.id, *card_id, *card_count, "sideboard").await?;
+            insert_deck_entry(&mut *db, self.id, *card_id, *card_count, "sideboard").await?;
         }
 
         let color_identity = {
@@ -223,7 +228,7 @@ INNER JOIN scryfall_card sc
 WHERE deck_id = $1;",
             )
             .bind(self.id.as_uuid())
-            .fetch(db);
+            .fetch(&mut *db);
             let mut ci = DeckColorIdentity::default();
             while let Some(row) = rows.next().await {
                 let row = row?;
@@ -291,49 +296,53 @@ struct DeckEntryRow {
     pile: String,
 }
 
-impl sqlx::FromRow<sqlx::postgres::PgRow> for DeckEntryRow {
-    fn from_row(row: sqlx::postgres::PgRow) -> Self {
-        let deck_json: Option<String> = row.get("deck_json");
-        let card_json: String = row.get("card_json");
+impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for DeckEntryRow {
+    fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        let deck_json: Option<String> = row.try_get("deck_json")?;
+        let card_json: String = row.try_get("card_json")?;
         // HACK: for some reason this has a 0x01 byte before the actual text
         // column. Strip that off for now.
         let card_json = card_json[1..].to_owned();
-        DeckEntryRow {
-            deck_id: Uuid::into(row.get("deck_id")),
-            user_id: i64::into(row.get("user_id")),
-            deck_title: row.get("deck_title"),
-            deck_url: row.get("deck_url"),
+        let row = DeckEntryRow {
+            deck_id: Uuid::into(row.try_get("deck_id")?),
+            user_id: i64::into(row.try_get("user_id")?),
+            deck_title: row.try_get("deck_title")?,
+            deck_url: row.try_get("deck_url")?,
             deck_json: deck_json.map(|s| serde_json::from_str(&s).unwrap()),
-            card_id: Uuid::into(row.get("card_id")),
+            card_id: Uuid::into(row.try_get("card_id")?),
             card_row: ScryfallCardRow {
                 json: card_json,
-                updated_at: row.get("card_updated_at"),
+                updated_at: row.try_get("card_updated_at")?,
             },
-            copies: <i16 as TryInto<u8>>::try_into(row.get("copies")).unwrap(),
-            pile: row.get("pile"),
-        }
+            copies: <i16 as TryInto<u8>>::try_into(row.try_get("copies")?).unwrap(),
+            pile: row.try_get("pile")?,
+        };
+        Ok(row)
     }
 }
 
 impl Deck {
-    pub async fn render(
+    pub async fn render<R>(
         &mut self,
         api: Arc<ScryfallApi>,
-        db: &mut impl Executor<Database = Postgres>,
-        redis: &mut impl AsyncCommands,
-    ) -> Result<RenderedDeck> {
-        let rendered = crate::tts::render_deck(api, db, redis, self).await?;
+        db: &mut PgConnection,
+        redis: &mut R,
+    ) -> Result<RenderedDeck>
+    where
+        R: AsyncCommands,
+    {
+        let rendered = crate::tts::render_deck(api, &mut *db, redis, self).await?;
         sqlx::query("UPDATE deck SET json = $1::jsonb WHERE id = $2;")
             .bind(serde_json::to_string(&rendered.json_description)?)
             .bind(self.id.as_uuid())
-            .execute(db)
+            .execute(&mut *db)
             .await?;
         self.rendered_json = Some(rendered.json_description.clone());
         Ok(rendered)
     }
 
     pub async fn get_by_id(
-        db: &mut impl Executor<Database = Postgres>,
+        db: impl sqlx::Executor<'_, Database = Postgres>,
         id: DeckId,
     ) -> Result<Option<Self>> {
         let mut rows = sqlx::query_as(
@@ -399,7 +408,7 @@ WHERE
 
     pub async fn delete(
         self,
-        db: &mut impl Executor<Database = Postgres>,
+        db: impl Executor<'_, Database = Postgres>,
         redis: &mut impl AsyncCommands,
     ) -> Result<()> {
         sqlx::query("DELETE FROM deck WHERE deck.id = $1;")
@@ -419,7 +428,7 @@ WHERE
 }
 
 pub async fn get_decks_for_user(
-    db: &mut impl Executor<Database = Postgres>,
+    db: impl Executor<'_, Database = Postgres>,
     user: UserId,
 ) -> Result<Vec<ttsmagic_types::Deck>> {
     let mut rows = sqlx::query(
@@ -442,9 +451,9 @@ WHERE user_id = $1;",
         let deck_id = row.get::<Uuid, _>("id");
         let url: String = row.get("url");
         let color_identity = {
-            let raw_identity = row.get::<PgArray1D<String>, _>("color_identity");
+            let raw_identity = row.get::<Vec<String>, _>("color_identity");
             let mut ci = DeckColorIdentity::default();
-            for color in raw_identity.get() {
+            for color in raw_identity {
                 match color.as_str() {
                     "B" => ci.black = true,
                     "U" => ci.blue = true,
@@ -472,53 +481,64 @@ WHERE user_id = $1;",
     Ok(decks)
 }
 
-#[async_trait(?Send)]
-pub trait DeckParser<DB: Executor<Database = Postgres>, R: AsyncCommands> {
+pub trait DeckParser<R>
+where
+    R: AsyncCommands,
+{
     fn name(&self) -> &'static str;
 
     fn canonical_deck_url(&self) -> Url;
 
-    async fn parse_deck(&self, db: &mut DB, redis: &mut R, unparsed: UnparsedDeck) -> Result<Deck>;
+    fn parse_deck<'a>(
+        &'a self,
+        db: &'a mut PgConnection,
+        redis: &'a mut R,
+        unparsed: UnparsedDeck,
+    ) -> LocalBoxFuture<'a, Result<Deck>>;
 }
 
 pub trait DeckMatcher: Sized {
     fn match_url(url: &Url) -> Option<Self>;
 }
 
-pub trait DeckLoader<DB: Executor<Database = Postgres>, R: AsyncCommands>:
-    DeckMatcher + DeckParser<DB, R>
-{
-}
-
-impl<DB, R, T> DeckLoader<DB, R> for T
+pub trait DeckLoader<R>: DeckMatcher + DeckParser<R>
 where
-    DB: Executor<Database = Postgres>,
     R: AsyncCommands,
-    T: DeckMatcher + DeckParser<DB, R>,
 {
 }
 
-pub fn find_loader<DB: Executor<Database = Postgres>, R: AsyncCommands>(
-    url: Url,
-) -> Option<Box<dyn DeckParser<DB, R>>> {
+impl<R, T> DeckLoader<R> for T
+where
+    T: DeckMatcher + DeckParser<R>,
+    R: AsyncCommands,
+{
+}
+
+pub fn find_loader<R>(url: Url) -> Option<Box<dyn DeckParser<R>>>
+where
+    R: AsyncCommands,
+{
     if let Some(l) = loaders::DeckboxLoader::match_url(&url) {
         return Some(Box::new(l));
     }
-    if let Some(l) = loaders::TappedOutLoader::match_url(&url) {
-        return Some(Box::new(l));
-    }
-    if let Some(l) = loaders::ArchidektLoader::match_url(&url) {
-        return Some(Box::new(l));
-    }
+    // if let Some(l) = loaders::TappedOutLoader::match_url(&url) {
+    //     return Some(Box::new(l));
+    // }
+    // if let Some(l) = loaders::ArchidektLoader::match_url(&url) {
+    //     return Some(Box::new(l));
+    // }
     None
 }
 
-pub async fn load_deck(
-    db: &mut impl Executor<Database = Postgres>,
-    redis: &mut impl AsyncCommands,
+pub async fn load_deck<R>(
+    db: &mut PgConnection,
+    redis: &mut R,
     user: &User,
     url: Url,
-) -> Result<Deck> {
+) -> Result<Deck>
+where
+    R: AsyncCommands,
+{
     let loader = match find_loader(url.clone()) {
         Some(l) => l,
         None => {
@@ -528,13 +548,16 @@ pub async fn load_deck(
             .with_context(|| format!("Failed to load deck from URL {}", url));
         }
     };
-    let unparsed = UnparsedDeck::save(db, redis, user, loader.canonical_deck_url())
+    let canon_url = loader.canonical_deck_url();
+    let unparsed_future = UnparsedDeck::save(&mut *db, redis, user, canon_url);
+    let unparsed = unparsed_future
         .await
         .with_context(|| format!("Failed to save {} deck with URL {}", loader.name(), url))?;
     debug!("UnparsedDeck saved: {:?}", unparsed);
-    let deck = loader
-        .parse_deck(db, redis, unparsed.clone())
+    let load_future = loader.parse_deck(db, redis, unparsed.clone());
+    let deck = load_future
         .await
         .with_context(|| format!("Failed to load contents of {}", unparsed))?;
+    drop(loader);
     Ok(deck)
 }
