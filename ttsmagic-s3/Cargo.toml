@@ -17,4 +17,4 @@ default-features = false
 version = "0.46"
 
 [dev-dependencies]
-pretty_assertions = "0.6"
+pretty_assertions = "0.7"
