@@ -147,7 +147,7 @@ impl ScryfallApi {
                 match image::load_from_memory_with_format(buffer.as_slice(), format.raw()) {
                     Ok(i) => return Ok(i.to_rgb8()),
                     Err(e) => {
-                        error!(
+                        warn!(
                             "Error opening image at {}, deleting the file: {}",
                             rel_filename, e
                         );
@@ -164,7 +164,7 @@ impl ScryfallApi {
                 match image::load_from_memory_with_format(buffer.as_slice(), format.raw()) {
                     Ok(i) => return Ok(i.to_rgb8()),
                     Err(e) => {
-                        error!(
+                        warn!(
                             "Error opening image at {}, deleting the file: {}",
                             rel_filename, e
                         );

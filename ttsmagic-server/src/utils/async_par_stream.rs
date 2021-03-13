@@ -126,15 +126,15 @@ mod tests {
         (
             Box::pin(future::ready(Ok(0))),
             Box::pin(async {
-                sleep(Duration::from_millis(100)).await;
+                sleep(Duration::from_millis(50)).await;
                 Ok(1)
             }),
             Box::pin(async {
-                sleep(Duration::from_millis(200)).await;
+                sleep(Duration::from_millis(100)).await;
                 Ok(2)
             }),
             Box::pin(async {
-                future::timeout(Duration::from_millis(400), future::pending())
+                future::timeout(Duration::from_millis(200), future::pending())
                     .await
                     .map_err(|_| ())
             }),

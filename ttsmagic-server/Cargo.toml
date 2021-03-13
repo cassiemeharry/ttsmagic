@@ -99,4 +99,5 @@ version = "0.8"
 
 [dev-dependencies]
 itertools = "0.10"
+mock-it = "0.3"
 pretty_assertions = "*"

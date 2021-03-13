@@ -7,6 +7,8 @@
 //! those other crates a pain to deal with.
 
 #![deny(missing_docs)]
+#![feature(generic_associated_types)]
+#![allow(incomplete_features)]
 
 #[macro_use]
 extern crate log;
@@ -221,6 +223,41 @@ async fn add_aws4_signature(
 }
 
 /// Interactions with S3 start here.
+pub trait Client: Sized + Send + Sync + 'static {
+    /// A handle that uses this client to act on a specific bucket.
+    type BucketHandle<'a>: BucketHandle<'a>;
+
+    /// Focus on a specific S3 bucket.
+    fn use_bucket<'a>(&'a self, name: impl ToString) -> Self::BucketHandle<'a>;
+}
+
+/// Operations that require a bucket are accessed through this object.
+pub trait BucketHandle<'h>: Sized + Send + Sync {
+    /// Check whether a file exists (using a HEAD request).
+    fn file_exists<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<bool>>;
+
+    /// Download a file.
+    fn get_object<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Box<dyn Read + Unpin + Send>>>;
+
+    /// Upload a file.
+    fn put_object<'a, F>(
+        &'a self,
+        key: &'a str,
+        file: F,
+        size_hint: Option<usize>,
+    ) -> BoxFuture<'a, Result<()>>
+    where
+        F: Read + Send + Sync + Unpin + 'static;
+
+    /// Generate a pre-signed URL for a given file. This URL will be valid until
+    /// `live_duration` seconds have passed.
+    fn presign_url(&self, key: &str, live_duration: Duration) -> Url;
+}
+
+/// The real implementation of the [`Client`] trait.
 #[derive(Debug)]
 pub struct S3Client {
     creds: S3Credentials,
@@ -239,16 +276,6 @@ impl S3Client {
         }
     }
 
-    /// Focus on a specific S3 bucket.
-    pub fn use_bucket(&self, name: impl ToString) -> S3BucketHandle {
-        let bucket_name = name.to_string();
-        trace!("Using bucket {:?}", bucket_name);
-        S3BucketHandle {
-            bucket_name,
-            client: self,
-        }
-    }
-
     #[inline]
     fn signed_request(&self, req: impl Into<surf::RequestBuilder>) -> surf::RequestBuilder {
         req.into().middleware(SignedContentMiddleware::new(
@@ -258,14 +285,27 @@ impl S3Client {
     }
 }
 
-/// Operations that require a bucket are accessed through this object.
+impl Client for S3Client {
+    type BucketHandle<'a> = S3BucketHandle<'a>;
+
+    fn use_bucket<'a>(&'a self, name: impl ToString) -> S3BucketHandle<'a> {
+        let bucket_name = name.to_string();
+        trace!("Using bucket {:?}", bucket_name);
+        S3BucketHandle {
+            bucket_name,
+            client: self,
+        }
+    }
+}
+
+/// The real implementation of the [`BucketHandle`] trait.
 #[derive(Clone, Debug)]
 pub struct S3BucketHandle<'a> {
     client: &'a S3Client,
     bucket_name: String,
 }
 
-impl S3BucketHandle<'_> {
+impl<'a> S3BucketHandle<'a> {
     fn file_url(&self, mut key: &str) -> Url {
         while key.starts_with('/') {
             key = &key[1..];
@@ -275,54 +315,94 @@ impl S3BucketHandle<'_> {
         trace!("S3 URL: {:?}", url);
         url
     }
+}
 
-    /// Check whether a file exists (using a HEAD request).
-    pub async fn file_exists(&self, key: &str) -> Result<bool> {
-        trace!(
-            "Checking if file {:?} exists in bucket {:?}",
-            key,
-            self.bucket_name
-        );
-        let url = self.file_url(key);
-        let req = self.client.signed_request(self.client.client.head(url));
-        match self.client.client.send(req).await {
-            Ok(resp) => match resp.status() as u16 {
-                404 => Ok(false),
-                200 => Ok(true),
-                other => panic!("Got unexpected status code {:?}", other),
-            },
-            Err(e) if e.status() as u16 == 404 => Ok(false),
-            Err(e) => Err(e),
-        }
+impl<'a> BucketHandle<'a> for S3BucketHandle<'a> {
+    #[cfg(test)]
+    fn file_exists<'b>(&'b self, _key: &'b str) -> BoxFuture<'b, Result<bool>> {
+        panic!("Would have sent real request in test!");
     }
 
-    /// Download a file.
-    pub async fn get_object(&self, key: &str) -> Result<impl Read> {
-        trace!("Getting file {:?} from bucket {:?}", key, self.bucket_name);
-        let url = self.file_url(key);
-        let req = self.client.signed_request(self.client.client.get(url));
-        let resp = req.await?;
-        Ok(resp)
+    #[cfg(not(test))]
+    fn file_exists<'b>(&'b self, key: &'b str) -> BoxFuture<'b, Result<bool>> {
+        Box::pin(async move {
+            trace!(
+                "Checking if file {:?} exists in bucket {:?}",
+                key,
+                self.bucket_name
+            );
+            let url = self.file_url(key);
+            let req = self.client.signed_request(self.client.client.head(url));
+            match self.client.client.send(req).await {
+                Ok(resp) => match resp.status() as u16 {
+                    404 => Ok(false),
+                    200 => Ok(true),
+                    other => panic!("Got unexpected status code {:?}", other),
+                },
+                Err(e) if e.status() as u16 == 404 => Ok(false),
+                Err(e) => Err(e),
+            }
+        })
     }
 
-    /// Upload a file.
-    pub async fn put_object<F>(&self, key: &str, file: F, size_hint: Option<usize>) -> Result<()>
+    #[cfg(test)]
+    fn get_object<'b>(
+        &'b self,
+        _key: &'b str,
+    ) -> BoxFuture<'b, Result<Box<dyn Read + Unpin + Send>>> {
+        panic!("Would have sent real request in test!");
+    }
+
+    #[cfg(not(test))]
+    fn get_object<'b>(
+        &'b self,
+        key: &'b str,
+    ) -> BoxFuture<'b, Result<Box<dyn Read + Unpin + Send>>> {
+        Box::pin(async move {
+            trace!("Getting file {:?} from bucket {:?}", key, self.bucket_name);
+            let url = self.file_url(key);
+            let req = self.client.signed_request(self.client.client.get(url));
+            let resp = req.await?;
+            Ok(Box::new(resp) as Box<dyn Read + Unpin + Send>)
+        })
+    }
+
+    #[cfg(test)]
+    fn put_object<'b, F>(
+        &'b self,
+        _key: &'b str,
+        _file: F,
+        _size_hint: Option<usize>,
+    ) -> BoxFuture<'b, Result<()>>
     where
         F: Read + Send + Sync + Unpin + 'static,
     {
-        info!("Uploading file {:?} to bucket {:?}", key, self.bucket_name);
-        let url = self.file_url(key);
-        let file_buffer = async_std::io::BufReader::new(file);
-        let body = surf::Body::from_reader(file_buffer, size_hint);
-        let req = self.client.client.put(url).body(body);
-        let req = self.client.signed_request(req);
-        let _resp = req.await?;
-        Ok(())
+        panic!("Would have sent real request in test!");
     }
 
-    /// Generate a pre-signed URL for a given file. This URL will be valid until
-    /// `live_duration` seconds have passed.
-    pub fn presign_url(&self, key: &str, live_duration: Duration) -> Url {
+    #[cfg(not(test))]
+    fn put_object<'b, F>(
+        &'b self,
+        key: &'b str,
+        file: F,
+        size_hint: Option<usize>,
+    ) -> BoxFuture<'b, Result<()>>
+    where
+        F: Read + Send + Sync + Unpin + 'static,
+    {
+        Box::pin(async move {
+            info!("Uploading file {:?} to bucket {:?}", key, self.bucket_name);
+            let url = self.file_url(key);
+            let file_buffer = async_std::io::BufReader::new(file);
+            let body = surf::Body::from_reader(file_buffer, size_hint);
+            let req = self.client.client.put(url).body(body);
+            let req = self.client.signed_request(req);
+            let _resp = req.await?;
+            Ok(())
+        })
+    }
+
+    fn presign_url(&self, key: &str, live_duration: Duration) -> Url {
         trace!(
             "Generating a pre-signed URL for file {:?} in bucket {:?}",
             key,
@@ -339,9 +419,19 @@ impl S3BucketHandle<'_> {
     }
 }
 
-#[cfg(test)]
-mod tests {
+/// Test helpers
+#[allow(missing_docs)]
+#[cfg_attr(not(test), allow(unused))]
+pub mod tests {
+    use async_std::io::Read;
+    use futures::future::BoxFuture;
+    use mock_it::Mock;
+    #[cfg(test)]
     use pretty_assertions::assert_eq;
+    use std::{pin::Pin, sync::Arc, time::Duration};
+    use url::Url;
+
+    use super::{BucketHandle, Client, Result, S3Credentials, S3Region};
 
     fn init() {
         let mut builder = pretty_env_logger::formatted_builder();
@@ -354,18 +444,136 @@ mod tests {
         let _ = builder.try_init();
     }
 
-    fn make_client() -> super::S3Client {
+    #[derive(Clone)]
+    pub struct ClientMock {
+        pub use_bucket: Mock<String, BucketHandleMock>,
+    }
+
+    impl ClientMock {
+        pub fn new() -> Self {
+            let use_bucket = Mock::new(BucketHandleMock::new());
+            Self { use_bucket }
+        }
+    }
+
+    impl super::Client for ClientMock {
+        type BucketHandle<'a> = BucketHandleMock;
+
+        fn use_bucket(&self, name: impl ToString) -> BucketHandleMock {
+            self.use_bucket.called(name.to_string())
+        }
+    }
+
+    #[repr(transparent)]
+    pub struct Factory<T>(Arc<dyn Fn() -> T + Send + Sync>);
+
+    impl<T> Clone for Factory<T> {
+        fn clone(&self) -> Self {
+            Factory(Arc::clone(&self.0))
+        }
+    }
+
+    impl<T> Factory<T> {
+        pub fn new<F>(factory: F) -> Self
+        where
+            F: Fn() -> T + Send + Sync + 'static,
+        {
+            Self(Arc::new(factory))
+        }
+
+        pub fn get(&self) -> T {
+            (self.0)()
+        }
+    }
+
+    #[derive(Clone, Eq)]
+    pub struct PtrEqual<T: ?Sized>(pub Arc<T>);
+
+    impl<T: ?Sized> std::cmp::PartialEq for PtrEqual<T> {
+        fn eq(&self, other: &Self) -> bool {
+            Arc::ptr_eq(&self.0, &other.0)
+        }
+    }
+
+    impl<T: ?Sized> From<Arc<T>> for PtrEqual<T> {
+        fn from(arc: Arc<T>) -> Self {
+            Self(arc)
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct BucketHandleMock {
+        pub file_exists: Arc<Mock<String, Factory<BoxFuture<'static, Result<bool>>>>>,
+        pub get_object:
+            Arc<Mock<String, Factory<BoxFuture<'static, Result<Box<dyn Read + Unpin + Send>>>>>>,
+        pub put_object: Arc<
+            Mock<
+                (
+                    String,
+                    PtrEqual<dyn Read + Send + Sync + Unpin + 'static>,
+                    Option<usize>,
+                ),
+                Factory<BoxFuture<'static, Result<()>>>,
+            >,
+        >,
+        pub presign_url: Mock<(String, Duration), Url>,
+    }
+
+    impl BucketHandleMock {
+        pub fn new() -> Self {
+            BucketHandleMock {
+                file_exists: Arc::new(Mock::new(Factory::new(|| {
+                    Box::pin(async { Ok(false) }) as BoxFuture<_>
+                }))),
+                get_object: Arc::new(Mock::new(Factory::new(|| {
+                    Box::pin(async {
+                        Err(surf::Error::from_str(
+                            surf::StatusCode::NotImplemented,
+                            "No mock response set for ClientMock::get_object",
+                        ))
+                    }) as BoxFuture<_>
+                }))),
+                put_object: Arc::new(Mock::new(Factory::new(|| {
+                    Box::pin(async { Ok(()) }) as BoxFuture<_>
+                }))),
+                presign_url: Mock::new(Url::parse("https://example.com/").unwrap()),
+            }
+        }
+    }
+
+    impl<'h> super::BucketHandle<'h> for BucketHandleMock {
+        fn file_exists<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<bool>> {
+            self.file_exists.called(key.into()).get()
+        }
+
+        fn get_object<'a>(
+            &'a self,
+            key: &'a str,
+        ) -> BoxFuture<'a, Result<Box<dyn Read + Unpin + Send>>> {
+            self.get_object.called(key.into()).get()
+        }
+
+        fn put_object<'a, F>(
+            &'a self,
+            key: &'a str,
+            file: F,
+            size_hint: Option<usize>,
+        ) -> BoxFuture<'a, Result<()>>
+        where
+            F: Read + Send + Sync + Unpin + 'static,
+        {
+            let file = (Arc::new(file) as Arc<dyn Read + Send + Sync + Unpin + 'static>).into();
+            self.put_object.called((key.into(), file, size_hint)).get()
+        }
+
+        fn presign_url(&self, key: &str, live_duration: Duration) -> Url {
+            self.presign_url.called((key.to_string(), live_duration))
+        }
+    }
+
+    fn make_client() -> ClientMock {
         init();
-        let creds = super::S3Credentials {
-            access_key: env!("S3_ACCESS_KEY_ID").to_owned(),
-            secret_key: env!("S3_SECRET_KEY_ID").to_owned(),
-        };
-        let region = super::S3Region::new(
-            "us-east-1".to_owned(),
-            "https://us-east-1.linodeobjects.com",
-        )
-        .unwrap();
-        super::S3Client::new(region, creds)
+        ClientMock::new()
     }
 
     trait OptionExt {
@@ -381,11 +589,23 @@ mod tests {
         }
     }
 
+    #[cfg(test)]
     #[test]
     fn test_file_exists_no() {
-        let client = make_client();
         const BUCKET: &'static str = "ttsmagic-card-images";
         const PATH: &'static str = "this/file/doesn't/exist.data";
+
+        let client = make_client();
+        let handle = BucketHandleMock::new();
+        handle
+            .file_exists
+            .given(PATH.to_string())
+            .will_return(Factory::new(|| Box::pin(async { Ok(false) }) as Pin<_>));
+        client
+            .use_bucket
+            .given(BUCKET.to_string())
+            .will_return(handle);
+
         let exists =
             async_std::task::block_on(
                 async move { client.use_bucket(BUCKET).file_exists(PATH).await },
@@ -394,11 +614,23 @@ mod tests {
         assert!(!exists);
     }
 
+    #[cfg(test)]
     #[test]
     fn test_file_exists_yes() {
-        let client = make_client();
         const BUCKET: &'static str = "ttsmagic-card-images";
-        const PATH: &'static str = "cards/e0/b5/e0b52b9c-7278-46b4-9f3c-3a7fc0c7e526_png.png";
+        const PATH: &'static str = "does_exist.txt";
+
+        let client = make_client();
+        let handle = BucketHandleMock::new();
+        handle
+            .file_exists
+            .given(PATH.to_string())
+            .will_return(Factory::new(|| Box::pin(async { Ok(true) }) as Pin<_>));
+        client
+            .use_bucket
+            .given(BUCKET.to_string())
+            .will_return(handle);
+
         let exists =
             async_std::task::block_on(
                 async move { client.use_bucket(BUCKET).file_exists(PATH).await },
@@ -407,11 +639,32 @@ mod tests {
         assert!(exists);
     }
 
+    #[cfg(test)]
     #[test]
     fn test_get_object() {
-        let client = make_client();
         const BUCKET: &'static str = "ttsmagic-card-images";
-        const PATH: &'static str = "cards/e0/b5/e0b52b9c-7278-46b4-9f3c-3a7fc0c7e526_png.png";
+        const PATH: &'static str = "dummy_file.txt";
+        const CONTENT: &'static [u8] = b"This is the contents of the file.";
+
+        let client = make_client();
+        let handle = BucketHandleMock::new();
+        handle
+            .file_exists
+            .given(PATH.to_string())
+            .will_return(Factory::new(|| Box::pin(async { Ok(true) }) as Pin<_>));
+        handle
+            .get_object
+            .given(PATH.to_string())
+            .will_return(Factory::new(|| {
+                Box::pin(async {
+                    Ok(Box::new(async_std::io::Cursor::new(CONTENT))
+                        as Box<dyn Read + Unpin + Send + 'static>)
+                }) as Pin<_>
+            }));
+        client
+            .use_bucket
+            .given(BUCKET.to_string())
+            .will_return(handle);
 
         let buf = async_std::task::block_on(async {
             use async_std::prelude::*;
@@ -421,30 +674,35 @@ mod tests {
             resp.read_to_end(&mut buffer).await.unwrap();
             buffer
         });
-        const PREFIX_MAX_SIZE: usize = 250;
-        let as_bytes: &[u8] = &buf[0..buf.len().min(PREFIX_MAX_SIZE)];
-        let as_str: &str;
-        let prefix = match std::str::from_utf8(as_bytes) {
-            Ok(s) => {
-                as_str = s;
-                &as_str as &dyn std::fmt::Debug
-            }
-            Err(_) => &as_bytes as &dyn std::fmt::Debug,
-        };
-        assert!(
-            buf.len() > 10_000,
-            "file was truncated, len is {:?}, prefix is bytes are {:?}",
-            buf.len(),
-            prefix,
-        );
+        assert_eq!(&buf, CONTENT);
     }
 
+    #[cfg(test)]
     #[test]
     fn test_put_object() {
-        let client = make_client();
         const BUCKET: &'static str = "ttsmagic-card-images";
         const PATH: &'static str = "test/file.data";
         const CONTENT: &'static [u8] = b"this is some content for the test file.\n";
+
+        let client = make_client();
+        let handle = BucketHandleMock::new();
+        handle
+            .file_exists
+            .given(PATH.to_string())
+            .will_return(Factory::new(|| Box::pin(async { Ok(true) }) as Pin<_>));
+        handle
+            .get_object
+            .given(PATH.to_string())
+            .will_return(Factory::new(|| {
+                Box::pin(async {
+                    Ok(Box::new(async_std::io::Cursor::new(CONTENT))
+                        as Box<dyn Read + Unpin + Send + 'static>)
+                }) as Pin<_>
+            }));
+        client
+            .use_bucket
+            .given(BUCKET.to_string())
+            .will_return(handle);
 
         let download_buffer = async_std::task::block_on(async move {
             use async_std::prelude::*;

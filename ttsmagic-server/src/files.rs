@@ -11,7 +11,7 @@ use async_std::{
 use futures::future::BoxFuture;
 use rust_embed::RustEmbed;
 use std::fmt;
-use ttsmagic_s3 as s3;
+use ttsmagic_s3::{self as s3, BucketHandle, Client};
 use url::Url;
 
 use crate::{utils::AsyncPool, web::TideErrorCompat};
@@ -70,10 +70,31 @@ lazy_static::lazy_static! {
     ).unwrap();
 }
 
-fn make_s3_client() -> s3::S3Client {
-    let creds = crate::secrets::linode_credentials().into();
+#[cfg(test)]
+fn default_client_mock() -> s3::tests::ClientMock {
+    CLIENT_MOCK_FACTORY.with(|factory| (factory.get())())
+}
+
+#[cfg(test)]
+thread_local! {
+    pub static CLIENT_MOCK_FACTORY: std::cell::Cell<fn() -> s3::tests::ClientMock> = std::cell::Cell::new(default_client_mock);
+}
+
+fn make_s3_client() -> impl Client {
+    #[cfg_attr(test, allow(unused))]
+    let creds: s3::S3Credentials = crate::secrets::linode_credentials().into();
+    #[cfg_attr(test, allow(unused))]
     let region: s3::S3Region = (&*REGION).clone();
-    s3::S3Client::new(region, creds)
+    let client;
+    #[cfg(test)]
+    {
+        client = default_client_mock();
+    }
+    #[cfg(not(test))]
+    {
+        client = s3::S3Client::new(region, creds);
+    }
+    client
 }
 
 #[derive(RustEmbed)]
@@ -98,10 +119,10 @@ impl MediaFile {
     }
 
     async fn try_get_file(
-        s3_client: s3::S3Client,
+        s3_client: impl Client,
         bucket: FileBucket,
         name: &str,
-    ) -> Result<impl Read, surf::Error> {
+    ) -> Result<impl Read + Send, surf::Error> {
         let bucket = s3_client.use_bucket(bucket);
         bucket.get_object(name).await
     }
@@ -110,11 +131,9 @@ impl MediaFile {
         let s3_client = make_s3_client();
         let bucket = FileBucket::for_key(key)
             .ok_or_else(|| anyhow!("File {:?} does not match any bucket", key))?;
-        s3_client
-            .use_bucket(bucket)
-            .file_exists(key)
-            .await
-            .tide_compat()
+        let handle = s3_client.use_bucket(bucket);
+        let exists_future = handle.file_exists(key);
+        exists_future.await.tide_compat()
     }
 
     pub async fn open_if_exists(name: &str) -> Result<Option<fs::File>> {
@@ -203,7 +222,7 @@ impl WritableMediaFile {
     }
 
     async fn upload_file_internal(
-        s3_client: s3::S3Client,
+        s3_client: impl Client,
         bucket: FileBucket,
         name: String,
         mut file: fs::File,
@@ -390,6 +409,11 @@ pub async fn upload_all(root: PathBuf, delete_after_upload: bool) -> Result<u64>
 
 #[cfg(test)]
 mod tests {
+    use async_std::io::{Cursor, Read};
+    use std::pin::Pin;
+    use ttsmagic_s3::tests::{BucketHandleMock, ClientMock, Factory};
+
+    use super::CLIENT_MOCK_FACTORY;
     use crate::test_helpers::init_logging;
 
     #[test]
@@ -397,32 +421,42 @@ mod tests {
         use super::MediaFile;
         use async_std::io::ReadExt as _;
 
-        const PREFIX_MAX_SIZE: usize = 250;
+        const CONTENT: &'static [u8] = b"This is the faked contents of a card image.";
+        const PATH: &'static str = "cards/b3/c2/b3c2bd44-4d75-4f61-89c0-1f1ba4d59ffa_png.png";
 
         init_logging();
 
+        fn client_mock_factory() -> ClientMock {
+            println!("Using get_example_file client mock");
+            let client = ClientMock::new();
+            let handle = BucketHandleMock::new();
+            handle
+                .get_object
+                .given(PATH.to_string())
+                .will_return(Factory::new(|| {
+                    Box::pin(async {
+                        Ok(Box::new(Cursor::new(CONTENT))
+                            as Box<dyn Read + Unpin + Send + 'static>)
+                    }) as Pin<_>
+                }));
+            client
+                .use_bucket
+                .given("ttsmagic-card-images".to_string())
+                .will_return(handle);
+            client
+        }
+
+        CLIENT_MOCK_FACTORY.with(|client_factory_cell| {
+            client_factory_cell.set(client_mock_factory);
+            println!("CLIENT_MOCK_FACTORY set to client_mock_factory");
+        });
         async_std::task::block_on(async {
-            let path = "cards/b3/c2/b3c2bd44-4d75-4f61-89c0-1f1ba4d59ffa_png.png";
-            let opened_res = MediaFile::open_if_exists(path).await;
+            let opened_res = MediaFile::open_if_exists(PATH).await;
             println!("File opened: {:?}", opened_res);
             let mut opened = opened_res.unwrap().unwrap();
             let mut buf = Vec::with_capacity(10_000);
             opened.read_to_end(&mut buf).await.unwrap();
-            let as_bytes: &[u8] = &buf[0..buf.len().min(PREFIX_MAX_SIZE)];
-            let as_str: &str;
-            let prefix = match std::str::from_utf8(as_bytes) {
-                Ok(s) => {
-                    as_str = s;
-                    &as_str as &dyn std::fmt::Debug
-                }
-                Err(_) => &as_bytes as &dyn std::fmt::Debug,
-            };
-            assert!(
-                buf.len() > 10_000,
-                "file was truncated, len is {:?}, prefix is bytes are {:?}",
-                buf.len(),
-                prefix,
-            );
-        })
+            assert_eq!(&buf, CONTENT);
+        });
     }
 }

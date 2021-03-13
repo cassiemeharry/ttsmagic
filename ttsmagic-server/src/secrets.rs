@@ -72,13 +72,22 @@ where
                 let cwd = std::env::current_dir().unwrap();
                 let mut dir: &Path = &cwd;
                 let mut toml_path;
-                loop {
-                    toml_path = dir.join("secrets.toml");
-                    if toml_path.is_file() {
-                        break;
+                if let Some(path_str) = option_env!("SECRETS_TOML") {
+                    // CARGO_MANIFEST_DIR is the path to (and including) `ttsmagic-server`.
+                    toml_path = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
+                    // By default, this path is relative to the workspace root, so go up a level.
+                    toml_path.push("..");
+                    toml_path.push(path_str);
+                } else {
+                    loop {
+                        toml_path = dir.join("secrets.toml");
+                        if toml_path.is_file() {
+                            break;
+                        }
+                        dir = dir.parent().expect("Failed to find secrets.toml file");
                     }
-                    dir = dir.parent().expect("Failed to find secrets.toml file");
-                }
+                };
+                toml_path = toml_path.canonicalize().unwrap();
                 println!("Loading secrets from {:?}", toml_path.to_string_lossy());
                 init_from_toml(toml_path).unwrap();
                 let l = SECRETS.read().unwrap();

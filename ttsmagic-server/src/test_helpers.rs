@@ -36,7 +36,7 @@ where
     );
     let main_db_name = "ttsmagic";
     let test_db_name = "ttsmagic_test";
-    let main_db_pool = sqlx::PgPool::new(&format!("{}/{}", pool_url_base, main_db_name))
+    let main_db_pool = sqlx::PgPool::connect(&format!("{}/{}", pool_url_base, main_db_name))
         .await
         .unwrap();
     let mut main_db_conn = main_db_pool
@@ -53,9 +53,10 @@ where
         .expect("Failed to create test DB");
 
     let result = {
-        let mut test_db_pool = sqlx::PgPool::new(&format!("{}/{}", pool_url_base, test_db_name))
-            .await
-            .unwrap();
+        let mut test_db_pool =
+            sqlx::PgPool::connect(&format!("{}/{}", pool_url_base, test_db_name))
+                .await
+                .unwrap();
         crate::migrations::apply_all(&mut test_db_pool)
             .await
             .expect("Failed to run migrations on test DB");
