@@ -725,7 +725,7 @@ dependencies = [
  "percent-encoding",
  "rand 0.8.3",
  "sha2",
- "time 0.2.25",
+ "time 0.2.26",
  "version_check",
 ]
 
@@ -735,7 +735,7 @@ version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ffdf8865bac3d9a3bde5bde9088ca431b11f5d37c7a578b8086af77248b76627"
 dependencies = [
- "time 0.2.25",
+ "time 0.2.26",
  "version_check",
 ]
 
@@ -1889,9 +1889,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.87"
+version = "0.2.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "265d751d31d6780a3f956bb5b8022feba2d94eeee5a84ba64f4212eedca42213"
+checksum = "538c092e5586f4cdd7dd8078c4a79220e3e168880218124dcbce860f0ea938c6"
 
 [[package]]
 name = "libflate"
@@ -2872,7 +2872,7 @@ dependencies = [
  "rustc_version 0.2.3",
  "serde",
  "sha2",
- "time 0.2.25",
+ "time 0.2.26",
  "tokio 1.2.0",
 ]
 
@@ -3759,9 +3759,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.2.25"
+version = "0.2.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1195b046942c221454c2539395f85413b33383a067449d78aab2b7b052a142f7"
+checksum = "08a8cbfbf47955132d0202d1662f49b2423ae35862aee471f3ba4b133358f372"
 dependencies = [
  "const_fn",
  "libc",
@@ -4015,7 +4015,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tide",
- "time 0.2.25",
+ "time 0.2.26",
  "toml",
  "ttsmagic-s3",
  "ttsmagic-types",
