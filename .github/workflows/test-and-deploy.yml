@@ -1,6 +1,5 @@
 name: "Test and Deploy"
 on:
-  pull_request:
   push:
 jobs:
   tests:
@@ -66,7 +65,7 @@ jobs:
 
   deploy:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event == 'push'
+    if: github.ref == 'refs/heads/main'
     needs: [ tests ]
     environment: production
     steps:
@@ -80,12 +79,6 @@ jobs:
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       - name: Build Docker image
         run: nix-build nix/docker-image.nix -o ttsmagic-docker-image.tar.gz
-      - name: Set up production secrets
-        run: 'echo > secrets.toml "$SECRETS_TOML"'
-        env:
-          SECRETS_TOML: ${{ secrets.DEPLOY_SECRETS_TOML }}
-      - name: Add secrets.toml to Docker image
-        run: nix-shell -p jq --run "bash nix/add-secrets-to-docker-image.sh $(pwd)/ttsmagic-docker-image.tar.gz $(pwd)/secrets.toml"
       - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
