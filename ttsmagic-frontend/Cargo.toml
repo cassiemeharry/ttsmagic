@@ -13,7 +13,7 @@ console_log = "0.2"
 js-sys = "0.3"
 log = "0.4"
 serde_json = "1"
-wasm-bindgen = "=0.2.71"
+wasm-bindgen = "=0.2.72"
 
 [dependencies.serde]
 features = ["derive"]
