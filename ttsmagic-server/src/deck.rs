@@ -521,12 +521,12 @@ where
     if let Some(l) = loaders::DeckboxLoader::match_url(&url) {
         return Some(Box::new(l));
     }
-    // if let Some(l) = loaders::TappedOutLoader::match_url(&url) {
-    //     return Some(Box::new(l));
-    // }
-    // if let Some(l) = loaders::ArchidektLoader::match_url(&url) {
-    //     return Some(Box::new(l));
-    // }
+    if let Some(l) = loaders::TappedOutLoader::match_url(&url) {
+        return Some(Box::new(l));
+    }
+    if let Some(l) = loaders::ArchidektLoader::match_url(&url) {
+        return Some(Box::new(l));
+    }
     None
 }
 
