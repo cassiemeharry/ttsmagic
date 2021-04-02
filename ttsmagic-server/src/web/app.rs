@@ -56,22 +56,16 @@ pub async fn static_files(req: Request<AppState>) -> Result {
 #[allow(unused)]
 #[cfg(debug_assertions)]
 pub async fn demo_login(req: Request<AppState>) -> Result {
-    use crate::web::{session::SessionSetExt, AnyhowTideCompat};
+    use crate::web::session::SessionSetExt;
     use tide::{http::headers::HeaderName, Redirect};
 
     let state = req.state().clone();
     let mut db_conn = state.db_pool.acquire().await?;
     let db_conn_1: &'_ mut sqlx::PgConnection = &mut *db_conn;
-    let demo_user = crate::user::User::get_or_create_demo_user(db_conn_1)
-        .await
-        .tide_compat()?;
-    let session = crate::web::session::Session::new(&mut *db_conn, demo_user.id)
-        .await
-        .tide_compat()?;
+    let demo_user = crate::user::User::get_or_create_demo_user(db_conn_1).await?;
+    let session = crate::web::session::Session::new(&mut *db_conn, demo_user.id).await?;
     let mut resp: Response = Redirect::new("/").into();
     let mut redis_conn = state.redis.get_async_connection().await?;
-    resp.set_session(&mut redis_conn, session)
-        .await
-        .tide_compat()?;
+    resp.set_session(&mut redis_conn, session).await?;
     Ok(resp)
 }

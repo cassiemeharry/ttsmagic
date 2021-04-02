@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_std::{net::IpAddr, path::PathBuf, sync::Arc};
-use thiserror::Error;
+use sentry::integrations::anyhow::capture_anyhow;
 
 mod app;
 mod deck;
@@ -10,30 +10,6 @@ mod uploaded_files;
 mod ws;
 
 use crate::scryfall::api::ScryfallApi;
-
-pub trait AnyhowTideCompat<T> {
-    fn tide_compat(self) -> std::result::Result<T, AnyhowTideCompatError>;
-}
-
-#[derive(Debug, Error)]
-#[error("{0}")]
-pub struct AnyhowTideCompatError(anyhow::Error);
-
-impl<T, E: Into<anyhow::Error>> AnyhowTideCompat<T> for std::result::Result<T, E> {
-    fn tide_compat(self) -> std::result::Result<T, AnyhowTideCompatError> {
-        self.map_err(|e| AnyhowTideCompatError(e.into()))
-    }
-}
-
-pub trait TideErrorCompat<T> {
-    fn tide_compat(self) -> anyhow::Result<T>;
-}
-
-impl<T> TideErrorCompat<T> for std::result::Result<T, tide::Error> {
-    fn tide_compat(self) -> anyhow::Result<T> {
-        self.map_err(|e| anyhow::Error::msg(e))
-    }
-}
 
 pub trait SurfErrorCompat<T> {
     fn surf_compat(self) -> anyhow::Result<T>;
@@ -55,6 +31,18 @@ pub struct AppStateInner {
     root: PathBuf,
 }
 
+async fn sentry_middleware(mut resp: tide::Response) -> tide::Result {
+    if let Some(error) = resp.take_error() {
+        let status = error.status();
+        let inner = error.into_inner();
+        error!("Tide view function returned {}: {}", status, inner);
+        capture_anyhow(&inner);
+        let error = tide::Error::new(status, inner);
+        resp.set_error(error);
+    }
+    Ok(resp)
+}
+
 pub async fn run_server(
     scryfall_api: Arc<ScryfallApi>,
     db_pool: sqlx::PgPool,
@@ -72,16 +60,12 @@ pub async fn run_server(
     });
     let mut app = tide::with_state(state.clone());
 
+    app.with(tide::utils::After(sentry_middleware));
     app.with(tide::log::LogMiddleware::new());
     app.with(session::SessionMiddleware::new());
 
     app.at("/").get(app::home_page);
-    app.at("/decks/:deck_id").get(|r| async move {
-        deck::download_deck_json(r).await.map_err(|e| {
-            println!("Got error when downloading deck JSON: {:?}", e);
-            e
-        })
-    });
+    app.at("/decks/:deck_id").get(deck::download_deck_json);
     app.at("/static/*path").get(app::static_files);
     app.at("/files/*path").get(uploaded_files::get);
     #[cfg(debug_assertions)]

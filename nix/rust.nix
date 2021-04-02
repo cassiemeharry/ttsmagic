@@ -6,6 +6,9 @@ let
   pkgs = import sources.nixpkgs {
     overlays = [ (import sources.nixpkgs-mozilla) ];
   };
-  channel = pkgs.rustChannelOfTargets "nightly" "2021-03-01" targets;
+  baseChannel = pkgs.rustChannelOfTargets "nightly" "2021-03-01" targets;
+  channel = baseChannel.override {
+    extensions = ["rust-src" "rustfmt-preview"];
+  };
 in
 channel

@@ -14,7 +14,7 @@ use std::fmt;
 use ttsmagic_s3::{self as s3, BucketHandle, Client};
 use url::Url;
 
-use crate::{utils::AsyncPool, web::TideErrorCompat};
+use crate::{utils::AsyncPool, web::SurfErrorCompat};
 
 const FILES_URL_BASE: &'static str = "https://ttsmagic.cards/files/";
 
@@ -133,7 +133,9 @@ impl MediaFile {
             .ok_or_else(|| anyhow!("File {:?} does not match any bucket", key))?;
         let handle = s3_client.use_bucket(bucket);
         let exists_future = handle.file_exists(key);
-        exists_future.await.tide_compat()
+        exists_future
+            .await
+            .map_err(|e| anyhow!("Failed to check if file exists: {}", e))
     }
 
     pub async fn open_if_exists(name: &str) -> Result<Option<fs::File>> {
@@ -145,7 +147,7 @@ impl MediaFile {
         let body = match Self::try_get_file(s3_client, bucket, name).await {
             Ok(r) => r,
             Err(e) if e.status() as u16 == 404 => return Ok(None),
-            Err(e) => return Err(e).tide_compat(),
+            Err(e) => anyhow::bail!("Failed to download file: {}", e),
         };
         let mut f = spawn_blocking(move || tempfile::tempfile().map(fs::File::from)).await?;
         async_std::io::copy(body, &mut f).await?;
@@ -258,7 +260,7 @@ impl WritableMediaFile {
             .use_bucket(bucket.to_string())
             .put_object(&key, file, size_hint)
             .await
-            .tide_compat()?;
+            .surf_compat()?;
         Ok(key)
     }
 
@@ -325,7 +327,7 @@ async fn upload_files(files: Receiver<(PathBuf, String)>, delete_after_upload: b
             .use_bucket(bucket.to_string())
             .put_object(&key, file, size_hint)
             .await
-            .tide_compat()?;
+            .map_err(|e| anyhow!("Failed to upload file to remote storage: {}", e))?;
         if delete_after_upload {
             fs::remove_file(&path).await.with_context(|| {
                 format!(

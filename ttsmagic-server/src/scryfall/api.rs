@@ -6,10 +6,7 @@ use serde::Deserialize;
 use tide::http::headers::{LOCATION, USER_AGENT};
 
 use super::ScryfallId;
-use crate::{
-    files::MediaFile,
-    web::{SurfErrorCompat as _, TideErrorCompat as _},
-};
+use crate::{files::MediaFile, web::SurfErrorCompat as _};
 
 // lazy_static::lazy_static! {
 //     static ref LOCATION_HEADER: tide::http::headers::HeaderName =
@@ -226,7 +223,10 @@ impl ScryfallApi {
                     }
                 }
             };
-            let bytes = response.body_bytes().await.tide_compat()?;
+            let bytes = response
+                .body_bytes()
+                .await
+                .map_err(|e| anyhow!("Failed to get file contents from remote store: {}", e))?;
             let image =
                 image::load_from_memory_with_format(bytes.as_slice(), format.raw())?.to_rgb8();
 

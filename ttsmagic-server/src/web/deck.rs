@@ -6,10 +6,7 @@ use tide::{
 use ttsmagic_types::DeckId;
 
 use super::AppState;
-use crate::{
-    deck::Deck,
-    web::{session::SessionGetExt, AnyhowTideCompat},
-};
+use crate::{deck::Deck, web::session::SessionGetExt};
 
 pub async fn download_deck_json(req: Request<AppState>) -> Result {
     macro_rules! ensure_404 {
@@ -62,9 +59,7 @@ pub async fn download_deck_json(req: Request<AppState>) -> Result {
     };
     let state = req.state();
     let mut db_conn = state.db_pool.acquire().await?;
-    let deck_opt = Deck::get_by_id(&mut *db_conn, deck_id)
-        .await
-        .tide_compat()?;
+    let deck_opt = Deck::get_by_id(&mut *db_conn, deck_id).await?;
     let mut deck = opt_404!(deck_opt);
     ensure_404!(
         deck.user_id == user.id,

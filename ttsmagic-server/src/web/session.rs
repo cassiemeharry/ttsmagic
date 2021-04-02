@@ -11,11 +11,7 @@ use tide::{
 use ttsmagic_types::UserId;
 use uuid::Uuid;
 
-use crate::{
-    secrets::session_private_key,
-    user::User,
-    web::{AnyhowTideCompat, AppState},
-};
+use crate::{secrets::session_private_key, user::User, web::AppState};
 
 #[derive(Clone, Debug)]
 pub struct Session {
@@ -331,7 +327,7 @@ impl SessionMiddleware {
             if let Some(s) = cookie_session {
                 session = s;
             } else {
-                session.save_to_cache(&mut redis_conn).await.tide_compat()?;
+                session.save_to_cache(&mut redis_conn).await?;
             }
         }
         // Record user info in Sentry when errors occur

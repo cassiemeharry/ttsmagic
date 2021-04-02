@@ -12,10 +12,7 @@ use url::Url;
 
 use super::AppState;
 use crate::web::session::{SessionClearExt, SessionSetExt};
-use crate::{
-    user::User,
-    web::{session::Session, AnyhowTideCompat},
-};
+use crate::{user::User, web::session::Session};
 
 const OPENID_EXT_SREG: &'static str = "http://openid.net/extensions/sreg/1.1";
 const OPENID_IDENTIFIER_SELECT: &'static str = "http://specs.openid.net/auth/2.0/identifier_select";
@@ -51,7 +48,7 @@ fn return_to_url<T>(req: &Request<T>) -> anyhow::Result<Url> {
 }
 
 pub async fn begin_login(req: Request<AppState>) -> Result {
-    let rt_url = return_to_url(&req).tide_compat()?;
+    let rt_url = return_to_url(&req)?;
     let return_to = format!("{}", rt_url);
     let realm = format!("{}://{}/", rt_url.scheme(), rt_url.host_str().unwrap());
     let params = &[
@@ -156,36 +153,32 @@ impl<'a> OpenIDResponse<'a> {
 pub async fn handle_redirect(request: Request<AppState>) -> tide::Result {
     let openid_response_str: &str = request.url().query().unwrap_or("");
     let openid_response: OpenIDResponse = serde_qs::from_str(openid_response_str)
-        .map_err(|e| anyhow!("Failed to parse OpenID response from Steam: {}", e))
-        .tide_compat()?;
+        .map_err(|e| anyhow!("Failed to parse OpenID response from Steam: {}", e))?;
     debug!("Got Steam OpenID response: {:#?}", openid_response);
-    let steam_id = openid_response.validate(&request).tide_compat()?;
+    let steam_id = openid_response.validate(&request)?;
     let state = request.state();
     let mut db = state.db_pool.acquire().await?;
     let mut redis_conn = state
         .redis
         .get_async_connection()
         .await
-        .context("Failed to create Redis connection after successful Steam verification")
-        .tide_compat()?;
+        .context("Failed to create Redis connection after successful Steam verification")?;
     let user = User::steam_login(&mut db, steam_id)
         .await
-        .context("Failed to create Steam login after successful verification")
-        .tide_compat()?;
-    let new_session = Session::new(&mut db, user.id).await.tide_compat()?;
+        .context("Failed to create Steam login after successful verification")?;
+    let new_session = Session::new(&mut db, user.id).await?;
     let mut response = Response::new(StatusCode::TemporaryRedirect);
     response.insert_header(LOCATION, "/");
     response
         .set_session(&mut redis_conn, new_session)
         .await
-        .context("Failed to set session after successful Steam login")
-        .tide_compat()?;
+        .context("Failed to set session after successful Steam login")?;
 
     Ok(response)
 }
 
 pub async fn logout(_req: Request<AppState>) -> tide::Result {
     let mut response: Response = Redirect::temporary("/").into();
-    response.clear_session().await.tide_compat()?;
+    response.clear_session().await?;
     Ok(response)
 }
