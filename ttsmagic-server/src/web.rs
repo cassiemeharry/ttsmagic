@@ -76,7 +76,12 @@ pub async fn run_server(
     app.with(session::SessionMiddleware::new());
 
     app.at("/").get(app::home_page);
-    app.at("/decks/:deck_id").get(deck::download_deck_json);
+    app.at("/decks/:deck_id").get(|r| async move {
+        deck::download_deck_json(r).await.map_err(|e| {
+            println!("Got error when downloading deck JSON: {:?}", e);
+            e
+        })
+    });
     app.at("/static/*path").get(app::static_files);
     app.at("/files/*path").get(uploaded_files::get);
     #[cfg(debug_assertions)]

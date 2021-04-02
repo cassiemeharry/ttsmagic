@@ -300,9 +300,6 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for DeckEntryRow {
     fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
         let deck_json: Option<String> = row.try_get("deck_json")?;
         let card_json: String = row.try_get("card_json")?;
-        // HACK: for some reason this has a 0x01 byte before the actual text
-        // column. Strip that off for now.
-        let card_json = card_json[1..].to_owned();
         let row = DeckEntryRow {
             deck_id: Uuid::into(row.try_get("deck_id")?),
             user_id: i64::into(row.try_get("user_id")?),
@@ -353,7 +350,7 @@ SELECT deck.id as deck_id
      , deck.url as deck_url
      , deck.json::text as deck_json
      , deck_entry.card as card_id
-     , scryfall_card.json as card_json
+     , scryfall_card.json::text as card_json
      , scryfall_card.updated_at as card_updated_at
      , deck_entry.copies as copies
      , deck_entry.pile::text as pile
