@@ -514,20 +514,23 @@ where
 {
 }
 
-pub fn find_loader<R>(url: Url) -> Option<Box<dyn DeckParser<R>>>
+pub fn find_loader<R>(url: Url) -> Result<Box<dyn DeckParser<R>>, Vec<&'static str>>
 where
     R: AsyncCommands,
 {
-    if let Some(l) = loaders::DeckboxLoader::match_url(&url) {
-        return Some(Box::new(l));
+    let mut tried = vec![];
+    macro_rules! try_loader {
+        ($label:literal => $loader:ident) => {
+            match loaders::$loader::match_url(&url) {
+                Some(l) => return Ok(Box::new(l)),
+                None => tried.push($label),
+            }
+        };
     }
-    if let Some(l) = loaders::TappedOutLoader::match_url(&url) {
-        return Some(Box::new(l));
-    }
-    if let Some(l) = loaders::ArchidektLoader::match_url(&url) {
-        return Some(Box::new(l));
-    }
-    None
+    try_loader!("Deckbox" => DeckboxLoader);
+    try_loader!("TappedOut" => TappedOutLoader);
+    try_loader!("Archidekt" => ArchidektLoader);
+    Err(tried)
 }
 
 pub async fn load_deck<R>(
@@ -540,10 +543,11 @@ where
     R: AsyncCommands,
 {
     let loader = match find_loader(url.clone()) {
-        Some(l) => l,
-        None => {
+        Ok(l) => l,
+        Err(tried) => {
             return Err(anyhow!(
-                "Unknown deck site. Only Deckbox, TappedOut, and Archidekt are supported."
+                "Unknown deck site. We tried to load from the following deck sites: {}",
+                tried.join(", "),
             ))
             .with_context(|| format!("Failed to load deck from URL {}", url));
         }

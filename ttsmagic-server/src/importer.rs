@@ -161,11 +161,14 @@ async fn cleanup_deck(
         deck_id, title, user_id, url
     );
     let loader = match crate::deck::find_loader::<redis::aio::Connection>(url.clone()) {
-        Some(l) => l,
-        None => {
+        Ok(l) => l,
+        Err(tried) => {
             warn!(
-                "Failed to find loader for deck {} at URL {} (user: {})",
-                deck_id, url, user_id
+                "Failed to find loader for deck {} at URL {} (user: {}), tried {}",
+                deck_id,
+                url,
+                user_id,
+                tried.join(", ")
             );
             return Ok(());
         }
