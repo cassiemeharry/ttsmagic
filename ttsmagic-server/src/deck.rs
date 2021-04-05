@@ -1,5 +1,6 @@
 use anyhow::{anyhow, ensure, Context, Result};
 use async_std::{prelude::*, sync::Arc};
+use chrono::{DateTime, Utc};
 use futures::future::LocalBoxFuture;
 use redis::AsyncCommands;
 use serde_json::Value;
@@ -82,6 +83,7 @@ pub struct UnparsedDeck {
     pub user_id: UserId,
     pub url: Url,
     pub title: String,
+    pub created_at: DateTime<Utc>,
 }
 
 impl fmt::Display for UnparsedDeck {
@@ -108,37 +110,40 @@ impl UnparsedDeck {
         debug!("Checking for an existing deck for this user and URL");
         let url_str = format!("{}", url);
         let existing_deck_opt =
-            sqlx::query("SELECT id, title FROM deck WHERE user_id = $1 AND url = $2;")
+            sqlx::query("SELECT id, title, created_at FROM deck WHERE user_id = $1 AND url = $2;")
                 .bind(user.id.as_queryable())
                 .bind(&url_str)
                 .fetch_optional(&mut *db)
                 .await?;
-        let (deck_id, title) = match existing_deck_opt {
+        let (deck_id, title, created_at) = match existing_deck_opt {
             Some(row) => {
                 debug!("Got row with {} values", row.len());
                 let deck_id: Uuid = row.get("id");
                 let title = row.get("title");
+                let created_at = row.get("created_at");
                 debug!("Updating deck {}", deck_id);
                 sqlx::query("UPDATE deck SET json = $1::jsonb WHERE id = $2;")
                     .bind(None::<&str>)
                     .bind(deck_id)
                     .execute(&mut *db)
                     .await?;
-                (DeckId(deck_id), title)
+                (DeckId(deck_id), title, created_at)
             }
             None => {
                 let deck_id = DeckId(Uuid::new_v4());
                 debug!("Creating row in deck table with ID {}", deck_id);
+                let created_at = chrono::Local::now().with_timezone(&chrono::Utc);
                 let inserted = sqlx::query(
                     "\
-INSERT INTO deck ( id, user_id, title, url )
-VALUES ( $1, $2, $3, $4 )
+INSERT INTO deck ( id, user_id, title, url, created_at )
+VALUES ( $1, $2, $3, $4, $5 )
 ON CONFLICT (id) DO UPDATE SET user_id = $2, title = $3, url = $4;",
                 )
                 .bind(deck_id.as_uuid())
                 .bind(user.id.as_queryable())
                 .bind(&url_str)
                 .bind(&url_str)
+                .bind(created_at)
                 .execute(&mut *db)
                 .await?;
                 ensure!(
@@ -146,7 +151,7 @@ ON CONFLICT (id) DO UPDATE SET user_id = $2, title = $3, url = $4;",
                     "Problem inserting deck row. Expected 1 row modified, saw {} instead",
                     inserted.rows_affected()
                 );
-                (deck_id, url_str)
+                (deck_id, url_str, created_at)
             }
         };
         sqlx::query("DELETE FROM deck_entry WHERE deck_id = $1")
@@ -170,6 +175,7 @@ ON CONFLICT (id) DO UPDATE SET user_id = $2, title = $3, url = $4;",
             user_id: user.id,
             url,
             title,
+            created_at,
         })
     }
 
@@ -264,6 +270,7 @@ WHERE deck_id = $1;",
             user_id: self.user_id,
             title: title,
             url: self.url,
+            created_at: self.created_at,
             commanders,
             main_deck,
             sideboard,
@@ -278,6 +285,7 @@ pub struct Deck {
     pub user_id: UserId,
     pub title: String,
     pub url: Url,
+    pub created_at: DateTime<Utc>,
     pub commanders: HashMap<ScryfallId, ScryfallCard>,
     pub main_deck: HashMap<ScryfallId, (ScryfallCard, u8)>,
     pub sideboard: HashMap<ScryfallId, (ScryfallCard, u8)>,
@@ -289,6 +297,7 @@ struct DeckEntryRow {
     user_id: UserId,
     deck_title: String,
     deck_url: String,
+    deck_created_at: DateTime<Utc>,
     deck_json: Option<Value>,
     card_id: ScryfallId,
     card_row: ScryfallCardRow,
@@ -305,6 +314,7 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for DeckEntryRow {
             user_id: i64::into(row.try_get("user_id")?),
             deck_title: row.try_get("deck_title")?,
             deck_url: row.try_get("deck_url")?,
+            deck_created_at: row.try_get("deck_created_at")?,
             deck_json: deck_json.map(|s| serde_json::from_str(&s).unwrap()),
             card_id: Uuid::into(row.try_get("card_id")?),
             card_row: ScryfallCardRow {
@@ -349,6 +359,7 @@ SELECT deck.id as deck_id
      , deck.title as deck_title
      , deck.url as deck_url
      , deck.json::text as deck_json
+     , deck.created_at as deck_created_at
      , deck_entry.card as card_id
      , scryfall_card.json::text as card_json
      , scryfall_card.updated_at as card_updated_at
@@ -377,6 +388,7 @@ WHERE
                         user_id: row.user_id,
                         title: row.deck_title,
                         url: Url::parse(&row.deck_url)?,
+                        created_at: row.deck_created_at,
                         commanders: HashMap::new(),
                         main_deck: HashMap::new(),
                         sideboard: HashMap::new(),

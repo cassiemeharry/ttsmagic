@@ -14,6 +14,7 @@ static MIGRATIONS: &[(&'static str, &'static str)] = &[
     migration!("0003_deck_multiple_piles"),
     migration!("0004_fix_deck_entry_pk"),
     migration!("0005_case_insensitive_card_name_search"),
+    migration!("0006_add_deck_created_at"),
 ];
 
 async fn apply_migration(
