@@ -202,6 +202,7 @@ impl<'a> SessionGetExt<'a>
             match inner(self).await {
                 Ok(s_opt) => s_opt,
                 Err(e) => {
+                    sentry::integrations::anyhow::capture_anyhow(&e);
                     error!("Error when getting a session out of a http::Request: {}", e);
                     None
                 }
@@ -321,7 +322,10 @@ impl SessionMiddleware {
             for hv in cookie_header_values.iter() {
                 match from_cookie_header(&mut *db_conn, &mut redis_conn, hv.as_str()).await {
                     Ok(s) => cookie_session = s,
-                    Err(e) => error!("Failed to parse cookie header {:?}: {:?}", hv.as_str(), e),
+                    Err(e) => {
+                        sentry::integrations::anyhow::capture_anyhow(&e);
+                        error!("Failed to parse cookie header {:?}: {:?}", hv.as_str(), e);
+                    }
                 }
             }
             if let Some(s) = cookie_session {

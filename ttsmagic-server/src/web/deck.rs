@@ -31,7 +31,9 @@ pub async fn download_deck_json(req: Request<AppState>) -> Result {
                 Ok(x) => x,
                 Err(e) => {
                     error!($msg, $($arg,)* e);
-                    return Err(tide::Error::from_str(StatusCode::NotFound, "Invalid deck"));
+                    let e = anyhow::Error::from(e);
+                    let tide_error = tide::Error::new(StatusCode::NotFound, e.context("Invalid deck"));
+                    return Err(tide_error);
                 }
             }
         };
