@@ -53,6 +53,13 @@ fn setup_sentry(logger: Logger, dsn: Option<&str>) -> Option<sentry::ClientInitG
 
 #[async_std::main]
 async fn main() -> Result<()> {
+    main_inner().await.map_err(|e| {
+        sentry::integrations::anyhow::capture_anyhow(&e);
+        e
+    })
+}
+
+async fn main_inner() -> Result<()> {
     if let Err(e) = dotenv::dotenv() {
         eprintln!("Failed to get .env file: {}", e);
     };

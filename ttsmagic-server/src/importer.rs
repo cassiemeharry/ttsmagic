@@ -234,6 +234,7 @@ ORDER BY user_id ASC, url ASC
             let url = match Url::parse(&url_str) {
                 Ok(u) => u,
                 Err(e) => {
+                    sentry::capture_error(&e);
                     error!("Failed to parse URL {:?} for deck {}: {}", url_str, id, e);
                     continue;
                 }

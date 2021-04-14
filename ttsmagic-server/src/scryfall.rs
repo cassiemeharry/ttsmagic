@@ -204,10 +204,12 @@ RETURNING updated_at
         match inner() {
             Ok(names) => names,
             Err(e) => {
-                let id = self
-                    .id()
-                    .map(|id| format!("{}", id))
-                    .unwrap_or_else(|id_err| format!("<error getting ID: {}>", id_err));
+                let id: String = match self.id() {
+                    Ok(id) => id.to_string(),
+                    Err(e) => format!("<no card ID due to error: {:#}>", e),
+                };
+                let e = e.context(format!("Failed to get names for card with ID {}", id));
+                sentry::integrations::anyhow::capture_anyhow(&e);
                 error!("Got error when generating names for card {}: {}", id, e);
                 NonEmpty::singleton(format!("<error getting name for card {}>", id))
             }

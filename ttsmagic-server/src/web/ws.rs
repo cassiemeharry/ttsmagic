@@ -119,6 +119,7 @@ async fn handle_connection(
                 let ws_msg = match ws_msg {
                     Some(Ok(m)) => m,
                     Some(Err(e)) => {
+                        sentry::capture_error(&e);
                         error!("Error parsing WebSocket connection: {}", e);
                         break;
                     },
@@ -171,7 +172,10 @@ async fn handle_connection(
                             let msg = s2f::ServerToFrontendMessage::FatalError(error);
                             match handle_sink_2.send(msg).await {
                                 Ok(()) => (),
-                                Err(e2) => error!("Failed to send the following error message to the WS client because of {}: {:?}", e2, e),
+                                Err(e2) => {
+                                    sentry::capture_error(&e2);
+                                    error!("Failed to send the following error message to the WS client because of {}: {:?}", e2, e);
+                                }
                             };
                         }
                     }
@@ -237,6 +241,7 @@ impl ServerCallback {
         let mut db_conn = match state.db_pool.acquire().await {
             Ok(c) => c,
             Err(e) => {
+                sentry::capture_error(&e);
                 error!("Error getting DB connection in WebSocket callback: {}", e);
                 return None;
             }
@@ -244,6 +249,7 @@ impl ServerCallback {
         let mut redis_conn = match state.redis.get_async_connection().await {
             Ok(c) => c,
             Err(e) => {
+                sentry::capture_error(&e);
                 error!(
                     "Error getting Redis connection in WebSocket callback: {}",
                     e
@@ -299,7 +305,10 @@ pub async fn listen((host, port): (IpAddr, u16), state: AppState) -> Result<()> 
             };
             match handle_connection(ws_stream, stream_state, user).await {
                 Ok(()) => (),
-                Err(e) => error!("Got an error while handling a websocket connection: {}", e),
+                Err(e) => {
+                    sentry::integrations::anyhow::capture_anyhow(&e);
+                    error!("Got an error while handling a websocket connection: {}", e);
+                }
             }
         });
     }

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_std::{net::IpAddr, path::PathBuf, sync::Arc};
-use sentry::integrations::anyhow::capture_anyhow;
 
 mod app;
 mod deck;
@@ -35,8 +34,8 @@ async fn sentry_middleware(mut resp: tide::Response) -> tide::Result {
     if let Some(error) = resp.take_error() {
         let status = error.status();
         let inner = error.into_inner();
+        sentry::integrations::anyhow::capture_anyhow(&inner);
         error!("Tide view function returned {}: {}", status, inner);
-        capture_anyhow(&inner);
         let error = tide::Error::new(status, inner);
         resp.set_error(error);
     }
