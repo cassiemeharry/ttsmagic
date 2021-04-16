@@ -85,9 +85,9 @@ checksum = "739f4a8db6605981345c5654f3a85b056ce52f37a39d34da03f25bf2151ea16e"
 
 [[package]]
 name = "ahash"
-version = "0.6.3"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "796540673305a66d127804eef19ad696f1f204b8c1025aaca4958c17eab32877"
+checksum = "7f200cbb1e856866d9eade941cf3aa0c5d7dd36f74311c4273b494f4ef036957"
 dependencies = [
  "getrandom 0.2.2",
  "once_cell",
@@ -475,6 +475,17 @@ dependencies = [
  "radium",
  "tap",
  "wyz",
+]
+
+[[package]]
+name = "blake2b_simd"
+version = "0.5.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "afa748e348ad3be8263be728124b24a24f268266f6f5d58af9d75f6a40b5c587"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "constant_time_eq",
 ]
 
 [[package]]
@@ -1045,6 +1056,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "142995ed02755914747cc6ca76fc7e4583cd18578746716d0508ea6ed558b9ff"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
 name = "dirs-next"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1055,13 +1075,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs-sys"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e93d7f5705de3e49895a2b5e0b8855a1c27f080192ae9c32a6432d50741a57a"
+dependencies = [
+ "libc",
+ "redox_users 0.3.5",
+ "winapi 0.3.9",
+]
+
+[[package]]
 name = "dirs-sys-next"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ebda144c4fe02d1f7ea1a7d9641b6fc6b580adcfa024ae48797ecdeb6825b4d"
 dependencies = [
  "libc",
- "redox_users",
+ "redox_users 0.4.0",
  "winapi 0.3.9",
 ]
 
@@ -2347,7 +2378,7 @@ dependencies = [
  "cfg-if 1.0.0",
  "instant",
  "libc",
- "redox_syscall",
+ "redox_syscall 0.2.5",
  "smallvec",
  "winapi 0.3.9",
 ]
@@ -2753,6 +2784,12 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
+version = "0.1.57"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41cc0f7e4d5d4544e8861606a285bb08d3e70712ccc7d2b84d7c0ccfaf4b05ce"
+
+[[package]]
+name = "redox_syscall"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94341e4e44e24f6b591b59e47a8a027df12e008d73fd5672dbea9cc22f4507d9"
@@ -2762,12 +2799,23 @@ dependencies = [
 
 [[package]]
 name = "redox_users"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de0737333e7a9502c789a36d7c7fa6092a49895d4faa31ca5df163857ded2e9d"
+dependencies = [
+ "getrandom 0.1.16",
+ "redox_syscall 0.1.57",
+ "rust-argon2",
+]
+
+[[package]]
+name = "redox_users"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "528532f3d801c87aec9def2add9ca802fe569e44a544afe633765267840abe64"
 dependencies = [
  "getrandom 0.2.2",
- "redox_syscall",
+ "redox_syscall 0.2.5",
 ]
 
 [[package]]
@@ -2874,6 +2922,18 @@ dependencies = [
  "sha2",
  "time 0.2.26",
  "tokio 1.2.0",
+]
+
+[[package]]
+name = "rust-argon2"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b18820d944b33caa75a71378964ac46f58517c92b6ae5f762636247c09e78fb"
+dependencies = [
+ "base64 0.13.0",
+ "blake2b_simd",
+ "constant_time_eq",
+ "crossbeam-utils 0.8.3",
 ]
 
 [[package]]
@@ -3372,9 +3432,9 @@ dependencies = [
 
 [[package]]
 name = "sqlx"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2739d54a2ae9fdd0f545cb4e4b5574efb95e2ec71b7f921678e246fb20dcaaf"
+checksum = "d582b9bc04ec6c03084196efc42c2226b018e9941f03ee62bd88921d500917c0"
 dependencies = [
  "sqlx-core",
  "sqlx-macros",
@@ -3382,11 +3442,11 @@ dependencies = [
 
 [[package]]
 name = "sqlx-core"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1cad9cae4ca8947eba1a90e8ec7d3c59e7a768e2f120dc9013b669c34a90711"
+checksum = "de52d1d473cebb2abb79c886ef6a8023e965e34c0676a99cfeac2cc7f0fde4c1"
 dependencies = [
- "ahash 0.6.3",
+ "ahash 0.7.2",
  "atoi",
  "base64 0.13.0",
  "bitflags",
@@ -3396,6 +3456,7 @@ dependencies = [
  "crossbeam-channel 0.5.0",
  "crossbeam-queue 0.3.1",
  "crossbeam-utils 0.8.3",
+ "dirs",
  "either",
  "futures-channel",
  "futures-core",
@@ -3411,7 +3472,7 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "percent-encoding",
- "rand 0.7.3",
+ "rand 0.8.3",
  "serde",
  "serde_json",
  "sha-1",
@@ -3428,9 +3489,9 @@ dependencies = [
 
 [[package]]
 name = "sqlx-macros"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01caee2b3935b4efe152f3262afbe51546ce3b1fc27ad61014e1b3cf5f55366e"
+checksum = "1a40f0be97e704d3fbf059e7e3333c3735639146a72d586c5534c70e79da88a4"
 dependencies = [
  "dotenv",
  "either",
@@ -3446,9 +3507,9 @@ dependencies = [
 
 [[package]]
 name = "sqlx-rt"
-version = "0.3.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ce2e16b6774c671cc183e1d202386fdf9cde1e8468c1894a7f2a63eb671c4f4"
+checksum = "b6ae97ab05063ed515cdc23d90253213aa24dda0a288c5ec079af3d10f9771bc"
 dependencies = [
  "async-native-tls",
  "async-std",
@@ -3655,7 +3716,7 @@ dependencies = [
  "cfg-if 1.0.0",
  "libc",
  "rand 0.8.3",
- "redox_syscall",
+ "redox_syscall 0.2.5",
  "remove_dir_all",
  "winapi 0.3.9",
 ]
