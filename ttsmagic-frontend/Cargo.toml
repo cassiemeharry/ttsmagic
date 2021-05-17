@@ -33,4 +33,4 @@ version = "0.3"
 
 [dependencies.yew]
 features = ["web_sys"]
-version = "0.17"
+version = "0.18"
