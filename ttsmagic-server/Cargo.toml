@@ -62,7 +62,7 @@ rev = "1ea0bd0c2e7b450eb5279995142fd64e5db0fa69"
 
 [dependencies.rust-embed]
 features = ["compression", "interpolate-folder-path"]
-version = "5"
+version = "6"
 
 [dependencies.sentry]
 default-features = false
